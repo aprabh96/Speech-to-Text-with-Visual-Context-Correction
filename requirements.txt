@@ -1,0 +1,16 @@
+openai>=1.76.0
+keyboard
+pyaudio
+sounddevice
+soundfile
+numpy
+pyperclip
+python-dotenv
+pillow
+pyautogui
+mss
+pywin32
+websockets>=10.1
+# Optional dependencies (fallbacks)
+groq
+anthropic>=0.19.1
