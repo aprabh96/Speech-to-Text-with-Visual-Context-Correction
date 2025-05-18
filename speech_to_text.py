@@ -150,81 +150,76 @@ RECORDING_PATH = os.path.join(recordings_dir, RECORDING_FILENAME) # For backup
 
 # --- Cursor Management (Identical for both modes) ---
 OCR_NORMAL = 32512
-OCR_CROSS = 32515
 OCR_IBEAM = 32513
 OCR_WAIT = 32514
+OCR_CROSS = 32515
 OCR_HAND = 32649
-original_cursor = None
+OCR_APPSTARTING = 32650  # Arrow with hourglass - animated spinning
+
+# No longer need original_cursor stored globally in this simpler approach
 cursor_animation_thread = None
 stop_animation = False
 
 def animated_cursor_thread():
-    """Thread function that cycles through cursors to create animation effect."""
+    """Simplified thread to keep recording state active for cursor management."""
     global stop_animation
     try:
         while not stop_animation:
-            # Use only the "thinking" wait cursor
-            cursor = win32gui.LoadImage(0, OCR_WAIT, win32con.IMAGE_CURSOR, 0, 0, win32con.LR_SHARED)
-            # Check return value of SetSystemCursor
-            if cursor and ctypes.windll.user32.SetSystemCursor(cursor, OCR_NORMAL) == 0:
-                if DEBUG_MODE: print("Debug: Failed to set system cursor in animation")
-            time.sleep(0.2) # Short sleep is fine since we're not cycling
+            time.sleep(0.2)  # Periodically check the stop_animation flag
     except Exception as e:
-        if DEBUG_MODE: print(f"Debug: Error in cursor animation thread: {e}")
-    finally:
-        try:
-             # Attempt to restore default cursors using SystemParametersInfo
-             # This is often more reliable than trying to restore the exact original handle
-             if ctypes.windll.user32.SystemParametersInfoA(win32con.SPI_SETCURSORS, 0, None, 0) == 0:
-                  if DEBUG_MODE: print("Debug: Failed to restore system cursors from animation thread using SPI")
-        except Exception as e:
-             print(f"Debug: Error restoring system cursors in animation thread: {e}")
-
+        if DEBUG_MODE: print(f"Debug: Error in simplified cursor state thread: {e}")
 
 def set_recording_cursor():
-    """Start animated cursor to indicate recording is in progress."""
-    global original_cursor, cursor_animation_thread, stop_animation
+    """Set the system cursors to the animated busy cursor (OCR_APPSTARTING)."""
+    global cursor_animation_thread, stop_animation
     if cursor_animation_thread and cursor_animation_thread.is_alive():
-        return # Already running
+        return  # Already running
+
     try:
-        # We don't actually need to store the original cursor handle if SPI_SETCURSORS works reliably.
-        # Let's simplify and rely on SPI_SETCURSORS for restoration.
-        # cursor = win32gui.LoadImage(0, OCR_NORMAL, win32con.IMAGE_CURSOR, 0, 0, win32con.LR_SHARED)
-        # if original_cursor is None:
-        #      original_cursor_handle = ctypes.windll.user32.CopyImage(cursor, win32con.IMAGE_CURSOR, 0, 0, win32con.LR_COPYFROMRESOURCE)
-        #      if original_cursor_handle == 0:
-        #           print("Error: Failed to copy original cursor.")
-        #           original_cursor = None
-        #      else:
-        #           original_cursor = original_cursor_handle # Store the handle
+        busy_cursor_handle = win32gui.LoadImage(0, OCR_APPSTARTING, win32con.IMAGE_CURSOR, 0, 0, win32con.LR_SHARED)
+        if not busy_cursor_handle:
+            if DEBUG_MODE: print("Debug: Failed to load OCR_APPSTARTING busy cursor.")
+            return
+
+        # Roles we want to change to the busy cursor
+        cursor_roles_to_override = [OCR_NORMAL, OCR_IBEAM, OCR_HAND] 
+
+        for role_id in cursor_roles_to_override:
+            if ctypes.windll.user32.SetSystemCursor(busy_cursor_handle, role_id) == 0:
+                if DEBUG_MODE: print(f"Debug: Failed to set role {role_id} to busy cursor.")
+        
+        if DEBUG_MODE: print("Successfully set busy cursor for specified roles.")
 
         stop_animation = False
         cursor_animation_thread = threading.Thread(target=animated_cursor_thread, daemon=True)
         cursor_animation_thread.start()
-        if DEBUG_MODE: print("Started animated cursor for recording")
+        if DEBUG_MODE: print("Started cursor state management for recording.")
     except Exception as e:
-        print(f"Error changing cursor: {e}")
+        print(f"Error setting recording cursor: {e}")
+        # Attempt to restore immediately if setting failed badly
+        restore_normal_cursor()
+
 
 def restore_normal_cursor():
-    """Restore the normal cursor."""
-    global stop_animation, cursor_animation_thread, original_cursor
+    """Restore all system cursors to their defaults."""
+    global stop_animation, cursor_animation_thread
     try:
-        if not stop_animation:
+        if not stop_animation: # Ensure stop_animation is true before joining
             stop_animation = True
-            if cursor_animation_thread and cursor_animation_thread.is_alive():
-                cursor_animation_thread.join(timeout=1.0) # Wait for thread to finish
+        
+        if cursor_animation_thread and cursor_animation_thread.is_alive():
+            cursor_animation_thread.join(timeout=0.5) # Wait for the thread to acknowledge stop
 
         # Use SystemParametersInfo to restore all system cursors to default
+        # This is the most reliable way to clean up global cursor changes.
         if ctypes.windll.user32.SystemParametersInfoA(win32con.SPI_SETCURSORS, 0, None, 0) == 0:
-            print("Failed to restore system cursors using SPI_SETCURSORS")
+            if DEBUG_MODE: print("Debug: SPI_SETCURSORS failed to restore system cursors.")
         else:
-            if DEBUG_MODE: print("Restored normal cursor using SPI_SETCURSORS")
+            if DEBUG_MODE: print("Restored all system cursors to default using SPI_SETCURSORS.")
 
-        # Clear references
-        original_cursor = None # Not storing it anymore
-        cursor_animation_thread = None
+        cursor_animation_thread = None # Clear thread reference
     except Exception as e:
-        print(f"Error restoring cursor: {e}")
+        print(f"Error restoring normal cursor: {e}")
 
 
 # --- Screenshot & Vision Model Correction Utilities (Used only in Buffered Mode) ---
@@ -1428,6 +1423,8 @@ def toggle_recording_live_sync():
 # --- Common Result Processing ---
 def process_final_result(transcript):
     """Handles the final transcript: copies to clipboard and pastes."""
+    global user_mode_selection
+    
     # Ensure libraries are available, especially during cleanup
     if not pyperclip or not pyautogui:
         print("Warning: Clipboard/GUI library unavailable during final processing.")
@@ -1438,12 +1435,19 @@ def process_final_result(transcript):
         clean_transcript = transcript.strip() # Remove leading/trailing whitespace
         print(f"Final Transcription: {clean_transcript}")
         try:
+            # Always copy to clipboard
             pyperclip.copy(clean_transcript)
             print(f"Copied to clipboard: {clean_transcript[:100]}...")
-            # Short delay before pasting
-            time.sleep(0.15)
-            pyautogui.hotkey('ctrl', 'v')
-            print("Paste command (Ctrl+V) sent.")
+            
+            # Only perform paste for non-transcription-only modes (the transcription-only modes might be
+            # triggering double pastes due to system behavior)
+            if user_mode_selection not in [4, 5]: # Skip paste for transcription-only modes
+                # Short delay before pasting
+                time.sleep(0.15)
+                pyautogui.hotkey('ctrl', 'v')
+                print("Paste command (Ctrl+V) sent.")
+            else:
+                print("Text copied to clipboard. Ready for manual paste.")
         except Exception as e:
             # Catch potential errors from pyperclip or pyautogui
             print(f"Error during copy/paste: {e}")
