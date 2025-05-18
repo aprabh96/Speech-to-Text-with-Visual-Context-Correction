@@ -161,18 +161,14 @@ stop_animation = False
 def animated_cursor_thread():
     """Thread function that cycles through cursors to create animation effect."""
     global stop_animation
-    cursors = [OCR_CROSS, OCR_WAIT, OCR_HAND]
     try:
         while not stop_animation:
-            for cursor_id in cursors:
-                if stop_animation: break
-                cursor = win32gui.LoadImage(0, cursor_id, win32con.IMAGE_CURSOR, 0, 0, win32con.LR_SHARED)
-                # Check return value of SetSystemCursor
-                if cursor and ctypes.windll.user32.SetSystemCursor(cursor, OCR_NORMAL) == 0:
-                    if DEBUG_MODE: print("Debug: Failed to set system cursor in animation")
-                # DestroyCursor seems unnecessary with LR_SHARED, but included for safety
-                # if cursor: ctypes.windll.user32.DestroyCursor(cursor) # Might cause issues if shared
-                time.sleep(0.3)
+            # Use only the "thinking" wait cursor
+            cursor = win32gui.LoadImage(0, OCR_WAIT, win32con.IMAGE_CURSOR, 0, 0, win32con.LR_SHARED)
+            # Check return value of SetSystemCursor
+            if cursor and ctypes.windll.user32.SetSystemCursor(cursor, OCR_NORMAL) == 0:
+                if DEBUG_MODE: print("Debug: Failed to set system cursor in animation")
+            time.sleep(0.2) # Short sleep is fine since we're not cycling
     except Exception as e:
         if DEBUG_MODE: print(f"Debug: Error in cursor animation thread: {e}")
     finally:
@@ -384,7 +380,8 @@ def transcribe_file(file_path):
     # Use OpenAI as primary transcription service
     if use_openai_transcription and openai_client:
         # Choose model based on user selection
-        model = "gpt-4o-mini-transcribe" if user_mode_selection == 2 else "gpt-4o-transcribe"
+        # Modes 1, 3, 4 use high-accuracy model; Modes 2, 5 use fast model
+        model = "gpt-4o-mini-transcribe" if user_mode_selection in [2, 5] else "gpt-4o-transcribe"
         if DEBUG_MODE: print(f"Transcribing with OpenAI {model}...")
         
         try:
@@ -489,7 +486,7 @@ def chunk_and_transcribe(file_path):
 
 def process_audio_buffered():
     """Process the recorded audio buffer (record-then-transcribe mode)."""
-    global buffered_frames, buffered_screenshot, user_wants_claude_correction, RECORDING_PATH
+    global buffered_frames, buffered_screenshot, user_wants_claude_correction, RECORDING_PATH, user_mode_selection
 
     if not buffered_frames:
         print("No audio recorded (buffered mode).")
@@ -520,12 +517,13 @@ def process_audio_buffered():
     if transcription:
         print(f"Raw transcription before correction:\n{transcription}\n")
         final_text = transcription
-        # Apply screenshot-based correction if user wanted it (screenshot was captured earlier)
-        if user_wants_claude_correction:
-            print("Running screenshot-based correction with GPT-4.1...")
+        
+        # Check if user selected a correction mode (1 or 2) or transcription-only mode (4 or 5)
+        if user_mode_selection in [1, 2] and user_wants_claude_correction:
+            print(f"Running screenshot-based correction with {'GPT-4.1' if user_mode_selection == 1 else 'gpt-4o-mini'}...")
             final_text = correct_transcription_with_openai(transcription, buffered_screenshot)
         else:
-            print("Skipping screenshot-based correction.")
+            print("Using transcription only (no screenshot-based correction).")
             final_text = transcription
 
         process_final_result(final_text) # Use the common result processor
@@ -562,7 +560,7 @@ def record_audio_buffered(stream):
 
 def toggle_recording_buffered():
     """Toggle recording state for the buffered (record-then-transcribe) mode."""
-    global buffered_recording, buffered_frames, buffered_screenshot, buffered_screenshot_path, buffered_audio_stream, audio, user_wants_claude_correction
+    global buffered_recording, buffered_frames, buffered_screenshot, buffered_screenshot_path, buffered_audio_stream, audio, user_wants_claude_correction, user_mode_selection
 
     if DEBUG_MODE: print(f"Hotkey detected (Buffered Mode Toggle): {HOTKEY}")
 
@@ -573,12 +571,12 @@ def toggle_recording_buffered():
         buffered_screenshot = None # Clear previous screenshot
         buffered_screenshot_path = None
 
-        # Capture screenshot ONLY if GPT-4.1 correction is enabled and desired
-        if user_wants_claude_correction:
-             print("Capturing screenshot for GPT-4.1 correction...")
+        # Capture screenshot ONLY if in modes 1-2 that use correction
+        if user_mode_selection in [1, 2] and user_wants_claude_correction:
+             print("Capturing screenshot for correction...")
              buffered_screenshot, buffered_screenshot_path = capture_screenshot()
         else:
-             print("Screenshot skipped (GPT-4.1 correction not enabled/desired).")
+             print("Screenshot skipped (no correction needed for this mode).")
 
         buffered_recording = True # Set flag before starting stream/thread
         set_recording_cursor()
@@ -1613,12 +1611,17 @@ if __name__ == "__main__":
     # Determine mode based on user input ONLY if vision model correction is available
     if use_claude_correction:
         print("\nPlease select transcription mode (press Enter for Option 1):")
+        print("\nWith Screenshot Correction:")
         print("  1. High-Accuracy Mode - Uses gpt-4o-transcribe + GPT-4.1 for best quality (slower)")
         print("  2. Fast-Processing Mode - Uses gpt-4o-mini models for quicker results (best for clear speakers)")
-        print("  3. Real-time Mode - Instant transcription without screenshot correction (beta)")
+        print("\nWithout Correction (Transcription Only):")
+        print("  3. Real-time Mode - Instant transcription without screenshot")
+        print("  4. Transcription-Only (High-Accuracy) - Uses gpt-4o-transcribe without correction")
+        print("  5. Transcription-Only (Fast) - Uses gpt-4o-mini-transcribe without correction")
+        
         while True:
             try:
-                user_input = input("Enter option (1, 2, or 3): ").strip()
+                user_input = input("Enter option (1-5): ").strip()
                 # Default to option 1 if user just presses Enter
                 if user_input == "":
                     user_input = "1"
@@ -1642,8 +1645,18 @@ if __name__ == "__main__":
                 user_wants_claude_correction = False
                 print("--> Option 3: Real-time Mode selected (gpt-4o-transcribe, no correction).")
                 break
+            elif user_input == '4':
+                user_mode_selection = 4
+                user_wants_claude_correction = False
+                print("--> Option 4: Transcription-Only (High-Accuracy) selected (gpt-4o-transcribe, no correction).")
+                break
+            elif user_input == '5':
+                user_mode_selection = 5
+                user_wants_claude_correction = False
+                print("--> Option 5: Transcription-Only (Fast) selected (gpt-4o-mini-transcribe, no correction).")
+                break
             else: 
-                print("Invalid input. Please enter '1', '2', or '3', or press Enter for default.")
+                print("Invalid input. Please enter a number from 1 to 5, or press Enter for default.")
     else:
         user_wants_claude_correction = False
         user_mode_selection = 3
@@ -1653,7 +1666,9 @@ if __name__ == "__main__":
     mode_names = {
         1: "Option 1: High-Accuracy Mode (gpt-4o-transcribe + GPT-4.1)",
         2: "Option 2: Fast-Processing Mode (gpt-4o-mini models)",
-        3: "Option 3: Real-time Mode"
+        3: "Option 3: Real-time Mode",
+        4: "Option 4: Transcription-Only (High-Accuracy)",
+        5: "Option 5: Transcription-Only (Fast)"
     }
     selected_mode = mode_names.get(user_mode_selection, "Unknown Mode")
     print(f"\n--- Starting in {selected_mode} ---")
@@ -1663,8 +1678,8 @@ if __name__ == "__main__":
     print("-"*(len(selected_mode) + 15))
 
     try:
-        if user_wants_claude_correction:
-            # --- Buffered Mode Execution (options 1 & 2) ---
+        if user_mode_selection in [1, 2, 4, 5]:
+            # --- Buffered Mode Execution (options 1, 2, 4, 5) ---
             keyboard.add_hotkey(HOTKEY, toggle_recording_buffered)
             print(f"Hotkey '{HOTKEY}' registered for Buffered Mode.")
             print("Waiting for hotkey press...")

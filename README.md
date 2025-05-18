@@ -5,14 +5,16 @@ This application allows you to transcribe your speech to text using OpenAI's mod
 
 ## Features
 
-- Three modes of operation: 
+- Five modes of operation: 
   - High-Accuracy Mode (slower, best quality using gpt-4o-transcribe + GPT-4.1)
   - Fast-Processing Mode (quicker using gpt-4o-mini models)
   - Real-time Mode (instant transcription without correction)
+  - Transcription-Only (High-Accuracy) - Uses gpt-4o-transcribe without correction
+  - Transcription-Only (Fast) - Uses gpt-4o-mini-transcribe without correction
 - Start/stop recording with Ctrl+Q
 - Visual recording indicator (mouse pointer animation during recording)
 - Live transcription display window (in Real-time Mode)
-- Automatic screenshot capture from the monitor with your mouse cursor (in High-Accuracy and Fast-Processing modes)
+- Automatic screenshot capture from the monitor with your mouse cursor (in modes with correction)
 - Transcription error correction using visual context (with Claude Sonnet as backup)
 - Handles large audio files by chunking them into smaller pieces
 - Transcribed text is automatically copied to clipboard AND pasted
@@ -24,9 +26,11 @@ This application uses the following OpenAI models:
 
 | Mode | Transcription Model | Correction Model |
 |------|---------------------|------------------|
-| High-Accuracy | gpt-4o-transcribe | GPT-4.1 |
-| Fast-Processing | gpt-4o-mini-transcribe | gpt-4o-mini |
-| Real-time | gpt-4o-transcribe | None (no correction) |
+| 1. High-Accuracy | gpt-4o-transcribe | GPT-4.1 |
+| 2. Fast-Processing | gpt-4o-mini-transcribe | gpt-4o-mini |
+| 3. Real-time | gpt-4o-transcribe | None (no correction) |
+| 4. Transcription-Only (High-Accuracy) | gpt-4o-transcribe | None (no correction) |
+| 5. Transcription-Only (Fast) | gpt-4o-mini-transcribe | None (no correction) |
 
 Fallback models:
 - Transcription fallback: Groq with Whisper-large-v3 (if configured)
@@ -54,18 +58,25 @@ For the easiest setup on Windows, simply run:
 
 ## Usage
 
-1. When prompted, select one of the three modes (or press Enter to select High-Accuracy Mode):
+1. When prompted, select one of the five modes (or press Enter to select High-Accuracy Mode):
+
+   **With Screenshot Correction:**
    - Option 1: High-Accuracy Mode (gpt-4o-transcribe + GPT-4.1) - Best quality, but slower
    - Option 2: Fast-Processing Mode (gpt-4o-mini models) - Quicker results, best for clear speakers
+   
+   **Without Correction (Transcription Only):**
    - Option 3: Real-time Mode (gpt-4o-transcribe, no correction) - Instant transcription
+   - Option 4: Transcription-Only (High-Accuracy) - Uses gpt-4o-transcribe, no correction
+   - Option 5: Transcription-Only (Fast) - Uses gpt-4o-mini-transcribe, no correction
 
 2. Press Ctrl+Q to start recording your speech:
-   - In High-Accuracy and Fast-Processing modes, this will capture a screenshot of your current screen
-   - In Real-time Mode, a small floating window will appear showing the live transcription
+   - In screenshot modes (1 & 2), this will capture a screenshot of your current screen
+   - In Real-time Mode (3), a small floating window will appear showing the live transcription
+   - In Transcription-Only modes (4 & 5), no screenshot is captured
 
 3. Press Ctrl+Q again to stop recording and get the transcription:
-   - In High-Accuracy and Fast-Processing modes, the audio will be transcribed and then corrected using the screenshot
-   - In Real-time Mode, the transcription is finalized and the live display window closes
+   - In modes with screenshot correction (1 & 2), the audio will be transcribed and corrected
+   - In modes without correction (3, 4, 5), the transcription is returned without further processing
 
 4. The transcription will automatically be copied to your clipboard and pasted wherever your cursor is.
 
@@ -101,15 +112,27 @@ This option is best for users who speak clearly without strong accents and prior
    - Finalizes the transcription
    - Copies the final transcription to your clipboard and pastes it
 
+### Transcription-Only (High-Accuracy) Mode (Option 4)
+1. Records audio from your default microphone 
+2. Changes the mouse pointer to an animated cursor to indicate recording is active
+3. When recording stops:
+   - Saves the audio to a file
+   - Transcribes using OpenAI's gpt-4o-transcribe model for high-quality results
+   - Copies the transcription directly to your clipboard and pastes it
+   - No screenshot is captured and no correction is performed
+
+### Transcription-Only (Fast) Mode (Option 5)
+Same as Option 4, but uses the faster gpt-4o-mini-transcribe model for quicker processing when accuracy is less critical.
+
 ## Multi-Monitor Support
 
-The application automatically detects which monitor your mouse cursor is on when you start recording. It will capture a screenshot of that specific monitor (in High-Accuracy and Fast-Processing modes), ensuring you get the visual context that's most relevant to what you're looking at or working on.
+The application automatically detects which monitor your mouse cursor is on when you start recording. It will capture a screenshot of that specific monitor (in modes with correction), ensuring you get the visual context that's most relevant to what you're looking at or working on.
 
 ## Screenshot Management
 
 The application uses a simple approach to manage screenshots:
 
-1. Each time you start recording in High-Accuracy or Fast-Processing modes, a new screenshot is captured
+1. Each time you start recording in screenshot correction modes (1 & 2), a new screenshot is captured
 2. The screenshot is always saved to the same file (`latest_screenshot.jpg`) in the `screenshots` folder
 3. Each new screenshot automatically overwrites the previous one
 4. This ensures only one screenshot file is stored at any time
@@ -128,7 +151,7 @@ The application will print the full path to the saved screenshot in the console 
 
 ## Transcription Correction
 
-When API keys are provided, in High-Accuracy and Fast-Processing modes the application will:
+When API keys are provided, in correction modes (1 & 2) the application will:
 1. Send the initial transcription to the correction model (GPT-4.1 or gpt-4o-mini, depending on mode)
 2. Include the screenshot as visual context
 3. Ask the model to correct any errors in the transcription based on the visual information
@@ -146,7 +169,7 @@ This feature is particularly useful for:
 
 To help you easily identify when recording is active, the application shows:
 
-1. An animated cursor while recording (in all modes)
+1. An animated "thinking" cursor while recording (in all modes)
 2. A live transcription window (in Real-time Mode)
 
 If for any reason the application closes unexpectedly, it will automatically restore your normal mouse pointer.
