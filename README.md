@@ -1,25 +1,41 @@
 # Speech-to-Text with Visual Context Correction
 **by Psynect Corp**
 
-This application allows you to transcribe your speech to text using OpenAI's gpt-4o-transcribe model, while leveraging GPT-4.1 (with Claude Sonnet as backup) to correct transcription errors using visual context from your screen. Simply press Ctrl+Q to start recording, and press Ctrl+Q again to stop recording and get your transcription directly copied to your clipboard and automatically pasted into your active text field.
+This application allows you to transcribe your speech to text using OpenAI's models, while leveraging visual context from your screen to correct transcription errors. Simply press Ctrl+Q to start recording, and press Ctrl+Q again to stop recording and get your transcription directly copied to your clipboard and automatically pasted into your active text field.
 
 ## Features
 
-- Two modes of operation: Buffered Mode (with screenshot correction) and Live Real-time Mode
+- Three modes of operation: 
+  - High-Accuracy Mode (slower, best quality using gpt-4o-transcribe + GPT-4.1)
+  - Fast-Processing Mode (quicker using gpt-4o-mini models)
+  - Real-time Mode (instant transcription without correction)
 - Start/stop recording with Ctrl+Q
 - Visual recording indicator (mouse pointer animation during recording)
 - Live transcription display window (in Real-time Mode)
-- Automatic screenshot capture from the monitor with your mouse cursor (in Buffered Mode)
-- Automatic transcription using OpenAI's gpt-4o-transcribe model (with Groq as fallback)
-- Transcription error correction using GPT-4.1 with visual context (Claude Sonnet as backup)
-- Handles large audio files by chunking them into smaller pieces (in Buffered Mode)
+- Automatic screenshot capture from the monitor with your mouse cursor (in High-Accuracy and Fast-Processing modes)
+- Transcription error correction using visual context (with Claude Sonnet as backup)
+- Handles large audio files by chunking them into smaller pieces
 - Transcribed text is automatically copied to clipboard AND pasted
 - Support for multi-monitor setups
+
+## Models Used
+
+This application uses the following OpenAI models:
+
+| Mode | Transcription Model | Correction Model |
+|------|---------------------|------------------|
+| High-Accuracy | gpt-4o-transcribe | GPT-4.1 |
+| Fast-Processing | gpt-4o-mini-transcribe | gpt-4o-mini |
+| Real-time | gpt-4o-transcribe | None (no correction) |
+
+Fallback models:
+- Transcription fallback: Groq with Whisper-large-v3 (if configured)
+- Correction fallback: Claude 3.5 Sonnet (if configured)
 
 ## Requirements
 
 - Python 3.8 or higher
-- An OpenAI API key (required for transcription with gpt-4o-transcribe and correction with GPT-4.1)
+- An OpenAI API key (required)
 - Groq API key (optional, used as fallback for transcription)
 - Anthropic API key (optional, used as fallback for correction)
 
@@ -38,17 +54,18 @@ For the easiest setup on Windows, simply run:
 
 ## Usage
 
-1. When prompted, select one of the two modes:
-   - Option 1: Buffered Mode with Screenshot+GPT-4.1 Correction (recommended for accuracy)
-   - Option 2: Live Real-time Transcription Mode (beta, for instant transcription)
+1. When prompted, select one of the three modes (or press Enter to select High-Accuracy Mode):
+   - Option 1: High-Accuracy Mode (gpt-4o-transcribe + GPT-4.1) - Best quality, but slower
+   - Option 2: Fast-Processing Mode (gpt-4o-mini models) - Quicker results, best for clear speakers
+   - Option 3: Real-time Mode (gpt-4o-transcribe, no correction) - Instant transcription
 
 2. Press Ctrl+Q to start recording your speech:
-   - In Buffered Mode, this will capture a screenshot of your current screen
-   - In Live Mode, a small floating window will appear showing the live transcription
+   - In High-Accuracy and Fast-Processing modes, this will capture a screenshot of your current screen
+   - In Real-time Mode, a small floating window will appear showing the live transcription
 
 3. Press Ctrl+Q again to stop recording and get the transcription:
-   - In Buffered Mode, the audio will be transcribed using OpenAI's gpt-4o-transcribe model and then corrected using GPT-4.1 with the screenshot
-   - In Live Mode, the transcription is finalized and the live display window closes
+   - In High-Accuracy and Fast-Processing modes, the audio will be transcribed and then corrected using the screenshot
+   - In Real-time Mode, the transcription is finalized and the live display window closes
 
 4. The transcription will automatically be copied to your clipboard and pasted wherever your cursor is.
 
@@ -56,7 +73,7 @@ For the easiest setup on Windows, simply run:
 
 ## How It Works
 
-### Buffered Mode (Option 1)
+### High-Accuracy Mode (Option 1)
 1. Records audio from your default microphone
 2. Captures a screenshot of the monitor where your mouse cursor is located
 3. Changes the mouse pointer to an animated cursor to indicate recording is active
@@ -69,7 +86,13 @@ For the easiest setup on Windows, simply run:
    - Sends the transcription and screenshot to GPT-4.1 (or Claude as backup) for correction
    - Copies the final transcription to your clipboard and pastes it
 
-### Live Real-time Mode (Option 2)
+### Fast-Processing Mode (Option 2)
+Works exactly like the High-Accuracy mode but uses:
+- gpt-4o-mini-transcribe for faster transcription
+- gpt-4o-mini for faster correction with the screenshot
+This option is best for users who speak clearly without strong accents and prioritize speed over absolute accuracy.
+
+### Real-time Mode (Option 3)
 1. Records audio from your default microphone
 2. Streams the audio in real-time to OpenAI's WebSocket API
 3. Displays the transcription as it happens in a small floating window above your cursor
@@ -80,13 +103,13 @@ For the easiest setup on Windows, simply run:
 
 ## Multi-Monitor Support
 
-The application automatically detects which monitor your mouse cursor is on when you start recording. It will capture a screenshot of that specific monitor (in Buffered Mode), ensuring you get the visual context that's most relevant to what you're looking at or working on.
+The application automatically detects which monitor your mouse cursor is on when you start recording. It will capture a screenshot of that specific monitor (in High-Accuracy and Fast-Processing modes), ensuring you get the visual context that's most relevant to what you're looking at or working on.
 
 ## Screenshot Management
 
 The application uses a simple approach to manage screenshots:
 
-1. Each time you start recording in Buffered Mode, a new screenshot is captured
+1. Each time you start recording in High-Accuracy or Fast-Processing modes, a new screenshot is captured
 2. The screenshot is always saved to the same file (`latest_screenshot.jpg`) in the `screenshots` folder
 3. Each new screenshot automatically overwrites the previous one
 4. This ensures only one screenshot file is stored at any time
@@ -105,8 +128,8 @@ The application will print the full path to the saved screenshot in the console 
 
 ## Transcription Correction
 
-When API keys are provided, in Buffered Mode the application will:
-1. Send the initial transcription from OpenAI's gpt-4o-transcribe to GPT-4.1 (or Claude as backup)
+When API keys are provided, in High-Accuracy and Fast-Processing modes the application will:
+1. Send the initial transcription to the correction model (GPT-4.1 or gpt-4o-mini, depending on mode)
 2. Include the screenshot as visual context
 3. Ask the model to correct any errors in the transcription based on the visual information
 4. Use a carefully crafted system prompt to ensure the model:
@@ -123,8 +146,8 @@ This feature is particularly useful for:
 
 To help you easily identify when recording is active, the application shows:
 
-1. An animated cursor while recording (in both modes)
-2. A live transcription window (in Live Mode)
+1. An animated cursor while recording (in all modes)
+2. A live transcription window (in Real-time Mode)
 
 If for any reason the application closes unexpectedly, it will automatically restore your normal mouse pointer.
 
