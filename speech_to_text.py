@@ -16,6 +16,8 @@ import pyperclip
 # import sounddevice as sd # Not used
 import soundfile as sf # Used for chunking large files in buffered mode
 import keyboard
+# NEW: Add mouse library for middle mouse button support
+import mouse
 from dotenv import load_dotenv
 from groq import Groq
 from openai import OpenAI
@@ -1420,6 +1422,49 @@ def toggle_recording_live_sync():
         stop_live_display()
 
 
+# --- NEW: Mouse Button Support ---
+# Global variable to store mouse listener
+mouse_listener = None
+
+def middle_mouse_handler():
+    """Handler for middle mouse button clicks. Routes to appropriate mode function."""
+    global user_mode_selection
+    if DEBUG_MODE: print("Middle mouse button clicked - triggering transcription")
+    
+    if user_mode_selection in [1, 2, 4, 5]:
+        # Buffered mode
+        toggle_recording_buffered()
+    else:
+        # Live mode
+        toggle_recording_live_sync()
+
+def start_mouse_listener():
+    """Start the mouse listener for middle button clicks."""
+    global mouse_listener
+    if mouse_listener is not None:
+        return  # Already running
+    
+    try:
+        # Use mouse.on_middle_click to specifically listen for middle button clicks
+        mouse_listener = mouse.on_middle_click(middle_mouse_handler)
+        if DEBUG_MODE: print("Mouse listener started - middle mouse button will trigger transcription")
+    except Exception as e:
+        print(f"Failed to start mouse listener: {e}")
+        mouse_listener = None
+
+def stop_mouse_listener():
+    """Stop the mouse listener."""
+    global mouse_listener
+    if mouse_listener is not None:
+        try:
+            mouse.unhook(mouse_listener)
+            mouse_listener = None
+            if DEBUG_MODE: print("Mouse listener stopped")
+        except Exception as e:
+            print(f"Error stopping mouse listener: {e}")
+# --- END: Mouse Button Support ---
+
+
 # --- Common Result Processing ---
 def process_final_result(transcript):
     """Handles the final transcript: copies to clipboard and pastes."""
@@ -1465,7 +1510,7 @@ async def async_live_main_loop():
     live_main_loop = asyncio.get_running_loop()
     print("=" * 30)
     print("Live Real-time Transcription Mode Active")
-    print(f"Press {HOTKEY} to start/stop recording.")
+    print(f"Press {HOTKEY} or MIDDLE MOUSE BUTTON to start/stop recording.")
     print("A small window will show live transcription updates.")
     print("Use Ctrl+C in the terminal to exit gracefully.")
     print("=" * 30)
@@ -1515,7 +1560,7 @@ def cleanup_on_exit():
     # Use local refs to avoid race conditions if globals change during cleanup
     stream_live = live_pyaudio_stream
     stream_buffered = buffered_audio_stream
-    audio_instance = audio
+    audio_instance = audio if 'audio' in globals() and audio is not None else None
 
     print("Closing PyAudio streams (if active)...")
     # Stop streams safely, checking if they exist and are active
@@ -1545,6 +1590,14 @@ def cleanup_on_exit():
         keyboard.unhook_all()
         print("Keyboard hooks removed.")
     except Exception as e: print(f"Cleanup error unhooking keyboard: {e}")
+
+    # --- NEW: Unhook Mouse ---
+    print("Unhooking mouse...")
+    try:
+        stop_mouse_listener()
+        mouse.unhook_all()
+        print("Mouse hooks removed.")
+    except Exception as e: print(f"Cleanup error unhooking mouse: {e}")
 
     # --- Cancel Async Tasks (if loop still running somehow, less common with atexit) ---
     if live_main_loop and live_main_loop.is_running():
@@ -1676,7 +1729,7 @@ if __name__ == "__main__":
     }
     selected_mode = mode_names.get(user_mode_selection, "Unknown Mode")
     print(f"\n--- Starting in {selected_mode} ---")
-    print(f"Press [{HOTKEY.upper()}] to start/stop recording.")
+    print(f"Press [{HOTKEY.upper()}] or MIDDLE MOUSE BUTTON to start/stop recording.")
     if user_mode_selection == 3: print("   (Live transcription window will appear on start)")
     print("Press [Ctrl+C] in this terminal to exit the application.")
     print("-"*(len(selected_mode) + 15))
@@ -1685,15 +1738,17 @@ if __name__ == "__main__":
         if user_mode_selection in [1, 2, 4, 5]:
             # --- Buffered Mode Execution (options 1, 2, 4, 5) ---
             keyboard.add_hotkey(HOTKEY, toggle_recording_buffered)
-            print(f"Hotkey '{HOTKEY}' registered for Buffered Mode.")
-            print("Waiting for hotkey press...")
+            start_mouse_listener()  # NEW: Start mouse listener
+            print(f"Hotkey '{HOTKEY}' and middle mouse button registered for Buffered Mode.")
+            print("Waiting for hotkey or mouse button press...")
             # Keep main thread alive indefinitely for synchronous hotkey detection
             while True: time.sleep(1)
         else:
             # --- Live Mode Execution (option 3) ---
             # Register the hotkey that calls the synchronous toggle function
             keyboard.add_hotkey(HOTKEY, toggle_recording_live_sync)
-            print(f"Hotkey '{HOTKEY}' registered for Live Mode.")
+            start_mouse_listener()  # NEW: Start mouse listener
+            print(f"Hotkey '{HOTKEY}' and middle mouse button registered for Live Mode.")
             print("Starting asyncio event loop for live processing...")
             # Run the asyncio event loop. The hotkey callback will manage tasks and Tkinter thread.
             asyncio.run(async_live_main_loop())

@@ -1,7 +1,9 @@
 # Speech-to-Text with Visual Context Correction
 **by Psynect Corp**
 
-This application allows you to transcribe your speech to text using OpenAI's models, while leveraging visual context from your screen to correct transcription errors. Simply press Ctrl+Q to start recording, and press Ctrl+Q again to stop recording and get your transcription directly copied to your clipboard and automatically pasted into your active text field.
+This application allows you to transcribe your speech to text using OpenAI's models, while leveraging visual context from your screen to correct transcription errors. Simply press Ctrl+Q or click your middle mouse button (scroll wheel) to start recording, speak naturally, then click again to stop and get your transcription automatically copied to your clipboard and pasted into your active text field.
+
+**Perfect for keyboard-free operation** - work entirely with your mouse for seamless voice-to-text workflows without ever touching the keyboard.
 
 ## Features
 
@@ -11,7 +13,7 @@ This application allows you to transcribe your speech to text using OpenAI's mod
   - Real-time Mode (instant transcription without correction)
   - Transcription-Only (High-Accuracy) - Uses gpt-4o-transcribe without correction
   - Transcription-Only (Fast) - Uses gpt-4o-mini-transcribe without correction
-- Start/stop recording with Ctrl+Q
+- Start/stop recording with Ctrl+Q or middle mouse button (scroll wheel click)
 - Visual recording indicator (mouse pointer animation during recording)
 - Live transcription display window (in Real-time Mode)
 - Automatic screenshot capture from the monitor with your mouse cursor (in modes with correction)
@@ -19,6 +21,37 @@ This application allows you to transcribe your speech to text using OpenAI's mod
 - Handles large audio files by chunking them into smaller pieces
 - Transcribed text is automatically copied to clipboard AND pasted
 - Support for multi-monitor setups
+
+## Keyboard-Free Operation
+
+One of the key benefits of the **middle mouse button support** is enabling completely keyboard-free operation during transcription workflows. 
+
+### The Problem
+Many users found themselves constantly reaching for the keyboard just to press Ctrl+Q to start and stop recordings, while spending the rest of their time using only the mouse for navigation, clicking, and positioning the cursor. This created an unnecessary dependency on the keyboard for what should be a seamless voice-to-text workflow.
+
+### The Solution
+With middle mouse button (scroll wheel click) support, you can now:
+
+- **Work entirely with just your mouse** - no need to touch the keyboard at all
+- **Keep your hands in the optimal position** - maintain your natural mouse grip without reaching for keys
+- **Streamline your workflow** - click the scroll wheel to start recording, speak your text, click again to stop and automatically paste
+- **Stay focused on your content** - eliminate the context switching between mouse and keyboard
+
+### Typical Keyboard-Free Workflow
+1. Position your cursor where you want text to appear (mouse only)
+2. Click the middle mouse button to start recording
+3. Speak your content naturally
+4. Click the middle mouse button again to stop recording
+5. Text is automatically transcribed and pasted at your cursor location
+6. Continue working with your mouse - no keyboard interaction needed
+
+This is especially valuable for:
+- **Content creators** writing long documents or emails
+- **Professionals** who dictate notes while reviewing documents on screen
+- **Users with accessibility needs** who prefer mouse-only operation
+- **Anyone seeking a more efficient voice-to-text workflow**
+
+The traditional Ctrl+Q hotkey remains available as an alternative for users who prefer keyboard shortcuts.
 
 ## Models Used
 
@@ -69,12 +102,12 @@ For the easiest setup on Windows, simply run:
    - Option 4: Transcription-Only (High-Accuracy) - Uses gpt-4o-transcribe, no correction
    - Option 5: Transcription-Only (Fast) - Uses gpt-4o-mini-transcribe, no correction
 
-2. Press Ctrl+Q to start recording your speech:
+2. Press Ctrl+Q or click the middle mouse button (scroll wheel) to start recording your speech:
    - In screenshot modes (1 & 2), this will capture a screenshot of your current screen
    - In Real-time Mode (3), a small floating window will appear showing the live transcription
    - In Transcription-Only modes (4 & 5), no screenshot is captured
 
-3. Press Ctrl+Q again to stop recording and get the transcription:
+3. Press Ctrl+Q or click the middle mouse button again to stop recording and get the transcription:
    - In modes with screenshot correction (1 & 2), the audio will be transcribed and corrected
    - In modes without correction (3, 4, 5), the transcription is returned without further processing
 
@@ -185,6 +218,13 @@ If for any reason the application closes unexpectedly, it will automatically res
   - Make sure no other application is capturing this key combination
   - Run the application as administrator
   - Try using the `setup_and_run.bat` script which includes more robust error handling
+
+- If the middle mouse button doesn't work:
+  - Ensure your mouse has a working scroll wheel that can be clicked
+  - Some applications may capture middle mouse button clicks - try closing other applications
+  - Use Ctrl+Q as an alternative if middle mouse button is not responding
+  - Run the application as administrator if mouse events are being blocked
+  - **Note**: The middle mouse button enables completely keyboard-free operation - ideal for workflows where you only want to use your mouse
 
 - If screenshot capture fails:
   - Check that you have the required permissions for screen capture
