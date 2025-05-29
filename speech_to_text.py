@@ -491,6 +491,13 @@ def process_audio_buffered():
 
     # Create a copy of frames for saving, as original might be cleared
     frames_to_save = list(buffered_frames)
+    total_frames = len(frames_to_save)
+    
+    # Calculate estimated duration for debugging
+    estimated_duration = (total_frames * CHUNK_SAMPLES) / RATE
+    if DEBUG_MODE: 
+        print(f"Processing {total_frames} audio frames (estimated {estimated_duration:.2f} seconds)")
+    
     # Clear global buffer for next recording
     buffered_frames.clear()
 
@@ -502,17 +509,23 @@ def process_audio_buffered():
 
     print(f"Buffered audio saved to: {full_audio_path}")
     file_size = os.path.getsize(full_audio_path)
+    file_size_mb = file_size / (1024 * 1024)
+    print(f"Audio file size: {file_size_mb:.2f} MB")
+    
     transcription = ""
 
     # Decide transcription method based on file size (chunking if needed)
     if file_size < MAX_FILE_SIZE:
+         print("File size within limit, transcribing directly...")
          transcription = transcribe_file(full_audio_path)
     else:
          print(f"Audio file > {MAX_FILE_SIZE/(1024*1024):.1f}MB, chunking required...")
          transcription = chunk_and_transcribe(full_audio_path)
 
     if transcription:
-        print(f"Raw transcription before correction:\n{transcription}\n")
+        transcription_length = len(transcription.strip())
+        print(f"Raw transcription completed ({transcription_length} characters):")
+        print(f"'{transcription[:100]}{'...' if len(transcription) > 100 else ''}")
         final_text = transcription
         
         # Check if user selected a correction mode (1 or 2) or transcription-only mode (4 or 5)
@@ -525,7 +538,7 @@ def process_audio_buffered():
 
         process_final_result(final_text) # Use the common result processor
     else:
-        print("Transcription failed (buffered mode).")
+        print("Transcription failed (buffered mode) - no text returned from API.")
         process_final_result("") # Process empty result
 
 
@@ -548,8 +561,35 @@ def record_audio_buffered(stream):
             except Exception as e:
                  print(f"Unexpected error during buffered recording: {e}")
                  break
+        
+        # After main recording loop ends, try to read any remaining data from the stream buffer
+        # This ensures we don't lose the last few chunks when buffered_recording becomes False
+        try:
+            print("Reading remaining audio data from stream buffer...")
+            remaining_attempts = 10  # Limit attempts to avoid infinite loop
+            while remaining_attempts > 0:
+                try:
+                    # Try to read remaining data with a shorter chunk size and non-blocking approach
+                    data = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
+                    if data and len(data) > 0:
+                        frames_this_recording.append(data)
+                        remaining_attempts -= 1  # Continue reading if we got data
+                        if DEBUG_MODE: print(f"Read additional chunk, {remaining_attempts} attempts remaining")
+                    else:
+                        break  # No more data available
+                except (IOError, OSError):
+                    # Stream likely closed or no more data available
+                    break
+                except Exception as e:
+                    if DEBUG_MODE: print(f"Error reading remaining data: {e}")
+                    break
+        except Exception as e:
+            if DEBUG_MODE: print(f"Error during remaining data read: {e}")
+            
     finally:
         print("Buffered recording loop finished.")
+        total_frames = len(frames_this_recording)
+        if DEBUG_MODE: print(f"Captured {total_frames} audio chunks")
         global buffered_frames # Assign to global *after* loop finishes
         buffered_frames = frames_this_recording
         # Stream closing and processing is handled by the main thread in toggle_recording_buffered
@@ -602,7 +642,11 @@ def toggle_recording_buffered():
         buffered_recording = False # Signal thread to stop collecting
         restore_normal_cursor()
 
-        # Stop and close the stream here in the main thread
+        # Wait for the recording thread to finish reading all remaining data BEFORE closing stream
+        # This ensures the thread has time to drain the PyAudio buffer completely
+        time.sleep(0.5) # Increased wait time to ensure complete buffer drain
+        
+        # Now stop and close the stream after the recording thread has finished
         stream_to_close = buffered_audio_stream # Local ref for safety
         buffered_audio_stream = None # Clear global ref
         if stream_to_close:
@@ -614,8 +658,8 @@ def toggle_recording_buffered():
                 print("Buffered PyAudio stream stopped and closed.")
             except Exception as e: print(f"Error stopping/closing buffered stream: {e}")
 
-        # Wait briefly for worker thread to finish appending last chunks (important!)
-        time.sleep(0.2) # Increased slightly
+        # Additional brief wait to ensure recording thread has finished assigning frames
+        time.sleep(0.1) 
 
         # Now process the collected audio
         process_audio_buffered()
