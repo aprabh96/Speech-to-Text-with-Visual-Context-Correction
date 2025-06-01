@@ -1552,9 +1552,8 @@ def process_final_result(transcript):
             pyperclip.copy(clean_transcript)
             print(f"Copied to clipboard: {clean_transcript[:100]}...")
             
-            # Only perform paste for non-transcription-only modes (the transcription-only modes might be
-            # triggering double pastes due to system behavior)
-            if user_mode_selection not in [4, 5]: # Skip paste for transcription-only modes
+            # Only skip auto-paste for real-time mode (mode 3)
+            if user_mode_selection != 3: # Skip paste only for real-time mode
                 # Short delay before pasting
                 time.sleep(0.15)
                 pyautogui.hotkey('ctrl', 'v')
