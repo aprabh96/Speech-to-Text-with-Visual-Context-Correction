@@ -125,6 +125,10 @@ live_pyaudio_stream = None
 live_ws = None          # will hold the open websocket object
 last_transcript_text = ""   # NEW: stores the latest full text
 
+# --- NEW: Transcription Backend Choice ---
+# 1 = GPT-4o family (default), 2 = Whisper-1 for maximum stability
+user_transcription_backend = 1  # Will be set by runtime prompt in main
+
 # --- NEW: Live Display Globals ---
 live_display_queue = None # queue.Queue() created when needed
 live_display_window = None # tk.Tk() instance
@@ -371,14 +375,19 @@ def save_audio_chunk(chunk_frames, filename):
 
 def transcribe_file(file_path):
     """Transcribe a single audio file using OpenAI API, falling back to Groq if available."""
-    global use_openai_transcription, use_groq_transcription, openai_client, groq_client, user_mode_selection
+    global use_openai_transcription, use_groq_transcription, openai_client, groq_client, user_mode_selection, user_transcription_backend
     transcription_text = ""
     
     # Use OpenAI as primary transcription service
     if use_openai_transcription and openai_client:
-        # Choose model based on user selection
-        # Modes 1, 3, 4 use high-accuracy model; Modes 2, 5 use fast model
-        model = "gpt-4o-mini-transcribe" if user_mode_selection in [2, 5] else "gpt-4o-transcribe"
+        # Determine which OpenAI transcription model to use based on the backend the user selected
+        if user_transcription_backend == 2:
+            # Bullet-proof stability requested – use Whisper-1
+            model = "whisper-1"
+        else:
+            # GPT-4o family selected – pick variant based on speed/quality preference
+            # Modes 1, 3, 4 use high-accuracy model; Modes 2, 5 use fast model
+            model = "gpt-4o-mini-transcribe" if user_mode_selection in [2, 5] else "gpt-4o-transcribe"
         if DEBUG_MODE: print(f"Transcribing with OpenAI {model}...")
         
         try:
@@ -1722,6 +1731,34 @@ if __name__ == "__main__":
         cleanup_on_exit()
         exit(1)
 
+    # === Ask user which transcription backend to use ===
+    print("\nSelect transcription backend (press Enter for default 1):")
+    print("  1. GPT-4o family (gpt-4o-transcribe / gpt-4o-mini-transcribe) – fastest & most accurate, but may truncate")
+    print("  2. Whisper-1 – slightly slower, rock-solid stability (recommended for long recordings)")
+
+    while True:
+        try:
+            backend_input = input("Backend (1-2): ").strip()
+            if backend_input == "":
+                backend_input = "1"
+                print("No selection made. Defaulting to GPT-4o family.")
+        except EOFError:
+            backend_input = "1"
+            print("\nEOF detected, defaulting to GPT-4o family (option 1).")
+
+        if backend_input == "1":
+            user_transcription_backend = 1
+            print("--> Using GPT-4o transcription models.")
+            break
+        elif backend_input == "2":
+            user_transcription_backend = 2
+            print("--> Using Whisper-1 for maximum stability.")
+            break
+        else:
+            print("Invalid input. Please enter 1 or 2 (or press Enter for default).")
+
+    # === End backend selection ===
+
     # --- User Choice ---
     print("-" * 50)
     print("Transcription & Correction Options:")
@@ -1734,66 +1771,111 @@ if __name__ == "__main__":
 
     # Determine mode based on user input ONLY if vision model correction is available
     if use_claude_correction:
-        print("\nPlease select transcription mode (press Enter for Option 1):")
-        print("\nWith Screenshot Correction:")
-        print("  1. High-Accuracy Mode - Uses gpt-4o-transcribe + GPT-4.1 for best quality (slower)")
-        print("  2. Fast-Processing Mode - Uses gpt-4o-mini models for quicker results (best for clear speakers)")
-        print("\nWithout Correction (Transcription Only):")
-        print("  3. Real-time Mode - Instant transcription without screenshot")
-        print("  4. Transcription-Only (High-Accuracy) - Uses gpt-4o-transcribe without correction")
-        print("  5. Transcription-Only (Fast) - Uses gpt-4o-mini-transcribe without correction")
-        
-        while True:
-            try:
-                user_input = input("Enter option (1-5): ").strip()
-                # Default to option 1 if user just presses Enter
-                if user_input == "":
-                    user_input = "1"
-                    print("No selection made. Defaulting to Option 1: High-Accuracy Mode.")
-            except EOFError: 
-                user_input = '3'; 
-                print("\nEOF detected, defaulting to Real-time Mode (option 3).") # Handle no input stream
+        if user_transcription_backend == 2:
+            # Whisper-1 backend - simplified options
+            print("\nPlease select transcription mode (press Enter for Option 1):")
+            print("  1. With Screenshot Correction - Uses whisper-1 + GPT-4.1 for best quality")
+            print("  2. Transcription Only - Uses whisper-1 without correction")
             
-            if user_input == '1':
-                user_mode_selection = 1
-                user_wants_claude_correction = True
-                print("--> Option 1: High-Accuracy Mode selected (gpt-4o-transcribe + GPT-4.1).")
-                break
-            elif user_input == '2':
-                user_mode_selection = 2
-                user_wants_claude_correction = True
-                print("--> Option 2: Fast-Processing Mode selected (gpt-4o-mini-transcribe + gpt-4o-mini).")
-                break
-            elif user_input == '3':
-                user_mode_selection = 3
-                user_wants_claude_correction = False
-                print("--> Option 3: Real-time Mode selected (gpt-4o-transcribe, no correction).")
-                break
-            elif user_input == '4':
-                user_mode_selection = 4
-                user_wants_claude_correction = False
-                print("--> Option 4: Transcription-Only (High-Accuracy) selected (gpt-4o-transcribe, no correction).")
-                break
-            elif user_input == '5':
-                user_mode_selection = 5
-                user_wants_claude_correction = False
-                print("--> Option 5: Transcription-Only (Fast) selected (gpt-4o-mini-transcribe, no correction).")
-                break
-            else: 
-                print("Invalid input. Please enter a number from 1 to 5, or press Enter for default.")
+            while True:
+                try:
+                    user_input = input("Enter option (1-2): ").strip()
+                    if user_input == "":
+                        user_input = "1"
+                        print("No selection made. Defaulting to Option 1: With Screenshot Correction.")
+                except EOFError: 
+                    user_input = '2'; 
+                    print("\nEOF detected, defaulting to Transcription Only (option 2).")
+                
+                if user_input == '1':
+                    user_mode_selection = 1
+                    user_wants_claude_correction = True
+                    print("--> Option 1: With Screenshot Correction selected (whisper-1 + GPT-4.1).")
+                    break
+                elif user_input == '2':
+                    user_mode_selection = 4
+                    user_wants_claude_correction = False
+                    print("--> Option 2: Transcription Only selected (whisper-1 only).")
+                    break
+                else: 
+                    print("Invalid input. Please enter 1 or 2, or press Enter for default.")
+        else:
+            # GPT-4o backend - full options
+            print("\nPlease select transcription mode (press Enter for Option 1):")
+            print("\nWith Screenshot Correction:")
+            print("  1. High-Accuracy Mode - Uses gpt-4o-transcribe + GPT-4.1 for best quality (slower)")
+            print("  2. Fast-Processing Mode - Uses gpt-4o-mini models for quicker results (best for clear speakers)")
+            print("\nWithout Correction (Transcription Only):")
+            print("  3. Real-time Mode - Instant transcription without screenshot")
+            print("  4. Transcription-Only (High-Accuracy) - Uses gpt-4o-transcribe without correction")
+            print("  5. Transcription-Only (Fast) - Uses gpt-4o-mini-transcribe without correction")
+            
+            while True:
+                try:
+                    user_input = input("Enter option (1-5): ").strip()
+                    if user_input == "":
+                        user_input = "1"
+                        print("No selection made. Defaulting to Option 1: High-Accuracy Mode.")
+                except EOFError: 
+                    user_input = '3'; 
+                    print("\nEOF detected, defaulting to Real-time Mode (option 3).")
+                
+                if user_input == '1':
+                    user_mode_selection = 1
+                    user_wants_claude_correction = True
+                    print("--> Option 1: High-Accuracy Mode selected (gpt-4o-transcribe + GPT-4.1).")
+                    break
+                elif user_input == '2':
+                    user_mode_selection = 2
+                    user_wants_claude_correction = True
+                    print("--> Option 2: Fast-Processing Mode selected (gpt-4o-mini-transcribe + gpt-4o-mini).")
+                    break
+                elif user_input == '3':
+                    user_mode_selection = 3
+                    user_wants_claude_correction = False
+                    print("--> Option 3: Real-time Mode selected (gpt-4o-transcribe, no correction).")
+                    break
+                elif user_input == '4':
+                    user_mode_selection = 4
+                    user_wants_claude_correction = False
+                    print("--> Option 4: Transcription-Only (High-Accuracy) selected (gpt-4o-transcribe, no correction).")
+                    break
+                elif user_input == '5':
+                    user_mode_selection = 5
+                    user_wants_claude_correction = False
+                    print("--> Option 5: Transcription-Only (Fast) selected (gpt-4o-mini-transcribe, no correction).")
+                    break
+                else: 
+                    print("Invalid input. Please enter a number from 1 to 5, or press Enter for default.")
     else:
-        user_wants_claude_correction = False
-        user_mode_selection = 3
-        print("Vision model correction unavailable. Using Real-time Mode.")
+        if user_transcription_backend == 2:
+            # Whisper-1 backend without correction available
+            user_wants_claude_correction = False
+            user_mode_selection = 4
+            print("Vision model correction unavailable. Using Whisper-1 Transcription-Only mode.")
+        else:
+            # GPT-4o backend without correction available
+            user_wants_claude_correction = False
+            user_mode_selection = 3
+            print("Vision model correction unavailable. Using Real-time Mode.")
 
     # --- Start Appropriate Mode ---
-    mode_names = {
-        1: "Option 1: High-Accuracy Mode (gpt-4o-transcribe + GPT-4.1)",
-        2: "Option 2: Fast-Processing Mode (gpt-4o-mini models)",
-        3: "Option 3: Real-time Mode",
-        4: "Option 4: Transcription-Only (High-Accuracy)",
-        5: "Option 5: Transcription-Only (Fast)"
-    }
+    # Dynamic mode names based on backend selection
+    if user_transcription_backend == 2:
+        # Whisper-1 backend mode names
+        mode_names = {
+            1: "With Screenshot Correction (whisper-1 + GPT-4.1)",
+            4: "Transcription Only (whisper-1)"
+        }
+    else:
+        # GPT-4o backend mode names
+        mode_names = {
+            1: "High-Accuracy Mode (gpt-4o-transcribe + GPT-4.1)",
+            2: "Fast-Processing Mode (gpt-4o-mini models)",
+            3: "Real-time Mode",
+            4: "Transcription-Only (High-Accuracy)",
+            5: "Transcription-Only (Fast)"
+        }
     selected_mode = mode_names.get(user_mode_selection, "Unknown Mode")
     print(f"\n--- Starting in {selected_mode} ---")
     print(f"Press [{HOTKEY.upper()}] or MIDDLE MOUSE BUTTON to start/stop recording.")
