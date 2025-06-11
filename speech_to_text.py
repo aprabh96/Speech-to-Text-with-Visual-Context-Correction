@@ -571,52 +571,6 @@ def record_audio_buffered(stream):
                  print(f"Unexpected error during buffered recording: {e}")
                  break
         
-        # IMPROVED: More aggressive buffer draining after main recording loop
-        # This addresses the known PyAudio buffer issues found in web search
-        print("Draining remaining audio buffer completely...")
-        consecutive_empty_reads = 0
-        max_empty_reads = 3  # Allow a few empty reads before giving up
-        max_drain_attempts = 50  # Increased from 10 to be more thorough
-        drain_attempt = 0
-        
-        while drain_attempt < max_drain_attempts and consecutive_empty_reads < max_empty_reads:
-            try:
-                # Try multiple chunk sizes to catch any remaining data
-                chunk_sizes_to_try = [CHUNK_SAMPLES, CHUNK_SAMPLES // 2, CHUNK_SAMPLES // 4]
-                data_found = False
-                
-                for chunk_size in chunk_sizes_to_try:
-                    try:
-                        # Non-blocking read with smaller chunks
-                        data = stream.read(chunk_size, exception_on_overflow=False)
-                        if data and len(data) > 0:
-                            frames_this_recording.append(data)
-                            data_found = True
-                            consecutive_empty_reads = 0  # Reset counter
-                            if DEBUG_MODE: 
-                                print(f"Drained chunk {drain_attempt+1}: {len(data)} bytes (chunk_size: {chunk_size})")
-                            break  # Got data, no need to try smaller chunks
-                    except (IOError, OSError):
-                        # No data available at this chunk size, try smaller
-                        continue
-                    except Exception as e:
-                        if DEBUG_MODE: print(f"Error draining chunk size {chunk_size}: {e}")
-                        continue
-                
-                if not data_found:
-                    consecutive_empty_reads += 1
-                    # Brief pause to let any remaining data settle
-                    time.sleep(0.01)  # 10ms pause
-                
-                drain_attempt += 1
-                
-            except Exception as e:
-                if DEBUG_MODE: print(f"Error during buffer drain attempt {drain_attempt}: {e}")
-                break
-        
-        if DEBUG_MODE: 
-            print(f"Buffer drain completed after {drain_attempt} attempts, {consecutive_empty_reads} consecutive empty reads")
-            
     finally:
         print("Buffered recording loop finished.")
         total_frames = len(frames_this_recording)
@@ -673,11 +627,8 @@ def toggle_recording_buffered():
         buffered_recording = False # Signal thread to stop collecting
         restore_normal_cursor()
 
-        # Wait for the recording thread to finish reading all remaining data BEFORE closing stream
-        # IMPROVED: Increased wait time to accommodate the more thorough buffer draining
-        # This addresses the known PyAudio buffer management issues found in web search
-        print("Waiting for complete buffer drain...")
-        time.sleep(1.2) # Increased from 0.5s to 1.2s for thorough draining
+        # Brief wait for recording thread to finish
+        time.sleep(0.1)
         
         # Now stop and close the stream after the recording thread has finished
         stream_to_close = buffered_audio_stream # Local ref for safety
@@ -690,9 +641,6 @@ def toggle_recording_buffered():
                 stream_to_close.close()
                 print("Buffered PyAudio stream stopped and closed.")
             except Exception as e: print(f"Error stopping/closing buffered stream: {e}")
-
-        # Additional brief wait to ensure recording thread has finished assigning frames
-        time.sleep(0.2) # Increased from 0.1s
 
         # Now process the collected audio
         process_audio_buffered()
