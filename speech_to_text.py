@@ -107,6 +107,10 @@ DEBUG_MODE = True
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB (for buffered mode)
 temp_dir = tempfile.gettempdir()
 
+# --- Safety Settings ---
+DEFAULT_MAX_RECORDING_DURATION = 5 * 60  # 5 minutes in seconds
+max_recording_duration_seconds = DEFAULT_MAX_RECORDING_DURATION  # User configurable
+
 # --- Global State Variables ---
 # For Buffered Mode
 buffered_recording = False
@@ -114,6 +118,7 @@ buffered_frames = []
 buffered_audio_stream = None
 buffered_screenshot = None
 buffered_screenshot_path = None
+buffered_recording_start_time = None
 
 # For Live Real-time Mode
 live_recording_active = False
@@ -124,6 +129,7 @@ live_transcription_task = None
 live_pyaudio_stream = None
 live_ws = None          # will hold the open websocket object
 last_transcript_text = ""   # NEW: stores the latest full text
+live_recording_start_time = None
 
 # --- NEW: Transcription Backend Choice ---
 # 1 = GPT-4o family (default), 2 = Whisper-1 for maximum stability
@@ -175,6 +181,94 @@ def animated_cursor_thread():
             time.sleep(0.2)  # Periodically check the stop_animation flag
     except Exception as e:
         if DEBUG_MODE: print(f"Debug: Error in simplified cursor state thread: {e}")
+
+def check_recording_duration(start_time, mode_name="recording"):
+    """Check if recording duration exceeds the safety limit."""
+    global max_recording_duration_seconds
+    if start_time is None:
+        return False, 0
+    
+    duration = time.time() - start_time
+    duration_minutes = duration / 60
+    max_minutes = max_recording_duration_seconds / 60
+    
+    if duration > max_recording_duration_seconds:
+        print(f"\n⚠️  WARNING: {mode_name.capitalize()} duration ({duration_minutes:.1f} minutes) exceeds safety limit ({max_minutes:.1f} minutes)!")
+        return True, duration
+    return False, duration
+
+def format_duration(seconds):
+    """Format seconds into a readable duration string."""
+    if seconds < 60:
+        return f"{seconds:.1f} seconds"
+    elif seconds < 3600:
+        return f"{seconds/60:.1f} minutes"
+    else:
+        return f"{seconds/3600:.1f} hours"
+
+def settings_menu():
+    """Display and handle settings configuration."""
+    global max_recording_duration_seconds
+    
+    while True:
+        print("\n" + "="*60)
+        print("⚙️  SETTINGS MENU")
+        print("="*60)
+        print(f"Current Settings:")
+        print(f"  📏 Maximum Recording Duration: {format_duration(max_recording_duration_seconds)}")
+        print(f"     (Safety feature to prevent accidental long recordings)")
+        print("\nOptions:")
+        print("  1. Change Maximum Recording Duration")
+        print("  2. Reset to Default (5 minutes)")
+        print("  3. Back to Main Menu")
+        print("="*60)
+        
+        try:
+            choice = input("Enter your choice (1-3): ").strip()
+        except EOFError:
+            choice = "3"
+            print("\nEOF detected, returning to main menu.")
+            
+        if choice == "1":
+            print(f"\nCurrent maximum duration: {format_duration(max_recording_duration_seconds)}")
+            print("Enter new maximum duration:")
+            print("  Examples: '10' (10 seconds), '2.5' (2.5 minutes), '0.5' (30 seconds)")
+            print("  Range: 10 seconds to 60 minutes")
+            
+            try:
+                duration_input = input("New duration in minutes: ").strip()
+                if duration_input == "":
+                    print("No change made.")
+                    continue
+                    
+                duration_minutes = float(duration_input)
+                duration_seconds = duration_minutes * 60
+                
+                if duration_seconds < 10:
+                    print("⚠️  Minimum duration is 10 seconds (0.17 minutes)")
+                    continue
+                elif duration_seconds > 3600:  # 60 minutes
+                    print("⚠️  Maximum duration is 60 minutes for safety")
+                    continue
+                    
+                max_recording_duration_seconds = duration_seconds
+                print(f"✅ Maximum recording duration updated to: {format_duration(duration_seconds)}")
+                
+            except ValueError:
+                print("⚠️  Invalid input. Please enter a number (e.g., 5, 2.5, 10)")
+            except EOFError:
+                print("\nEOF detected, no changes made.")
+                
+        elif choice == "2":
+            max_recording_duration_seconds = DEFAULT_MAX_RECORDING_DURATION
+            print(f"✅ Maximum recording duration reset to default: {format_duration(DEFAULT_MAX_RECORDING_DURATION)}")
+            
+        elif choice == "3":
+            print("Returning to main menu...")
+            break
+            
+        else:
+            print("⚠️  Invalid choice. Please enter 1, 2, or 3.")
 
 def set_recording_cursor():
     """Set the system cursors to the animated busy cursor (OCR_APPSTARTING)."""
@@ -630,20 +724,24 @@ def record_audio_buffered(stream):
 
 def toggle_recording_buffered():
     """Toggle recording state for the buffered (record-then-transcribe) mode."""
-    global buffered_recording, buffered_frames, buffered_screenshot, buffered_screenshot_path, buffered_audio_stream, audio, user_wants_claude_correction, user_mode_selection
+    global buffered_recording, buffered_frames, buffered_screenshot, buffered_screenshot_path, buffered_audio_stream, audio, user_wants_claude_correction, user_mode_selection, buffered_recording_start_time
 
     if DEBUG_MODE: print(f"Hotkey detected (Buffered Mode Toggle): {HOTKEY}")
 
     if not buffered_recording:
         # --- Start Buffered Recording ---
-        print("Recording started (Buffered Mode)... Press Ctrl+Q again to stop.")
+        print("🎤 Recording started (Buffered Mode)...")
+        print(f"Safety limit: {format_duration(max_recording_duration_seconds)}")
+        print("Press Ctrl+Q or middle mouse button again to stop.")
+        
         buffered_frames = [] # Clear previous frames
         buffered_screenshot = None # Clear previous screenshot
         buffered_screenshot_path = None
+        buffered_recording_start_time = time.time()  # Track start time
 
         # Capture screenshot ONLY if in modes 1-2 that use correction
         if user_mode_selection in [1, 2] and user_wants_claude_correction:
-             print("Capturing screenshot for correction...")
+             print("📸 Capturing screenshot for correction...")
              buffered_screenshot, buffered_screenshot_path = capture_screenshot()
         else:
              print("Screenshot skipped (no correction needed for this mode).")
@@ -658,10 +756,11 @@ def toggle_recording_buffered():
             )
             # Start the recording thread
             threading.Thread(target=record_audio_buffered, args=(buffered_audio_stream,), daemon=True).start()
-            print("Buffered PyAudio stream started.")
+            if DEBUG_MODE: print("Buffered PyAudio stream started.")
         except Exception as e:
             print(f"Error starting buffered PyAudio stream: {e}")
             buffered_recording = False # Reset flag on error
+            buffered_recording_start_time = None
             restore_normal_cursor()
             # Clean up stream if partially opened
             if buffered_audio_stream:
@@ -671,7 +770,11 @@ def toggle_recording_buffered():
 
     else:
         # --- Stop Buffered Recording ---
-        print("Recording stopped (Buffered Mode). Processing audio...")
+        print("🛑 Recording stopped (Buffered Mode).")
+        
+        # Check recording duration before processing
+        exceeded, duration = check_recording_duration(buffered_recording_start_time, "buffered recording")
+        
         buffered_recording = False # Signal thread to stop collecting
         restore_normal_cursor()
 
@@ -687,11 +790,53 @@ def toggle_recording_buffered():
                 if stream_to_close.is_active():
                     stream_to_close.stop_stream()
                 stream_to_close.close()
-                print("Buffered PyAudio stream stopped and closed.")
-            except Exception as e: print(f"Error stopping/closing buffered stream: {e}")
+                if DEBUG_MODE: print("Buffered PyAudio stream stopped and closed.")
+            except Exception as e: 
+                if DEBUG_MODE: print(f"Error stopping/closing buffered stream: {e}")
 
-        # Now process the collected audio
-        process_audio_buffered()
+        # Handle duration safety check
+        if exceeded:
+            print(f"📊 Recording duration: {format_duration(duration)}")
+            print("⚠️  This recording exceeds the safety limit and may cost significant API credits.")
+            print("\nOptions:")
+            print("  1. Transcribe anyway (will use API credits)")
+            print("  2. Cancel transcription (save costs)")
+            print("  3. Change safety settings")
+            
+            try:
+                choice = input("Your choice (1-3): ").strip()
+            except EOFError:
+                choice = "2"
+                print("\nEOF detected, canceling transcription to save costs.")
+                
+            if choice == "1":
+                print("⚠️  Proceeding with transcription...")
+                process_audio_buffered()
+            elif choice == "3":
+                settings_menu()
+                # Ask again after settings
+                try:
+                    choice = input("Transcribe now? (y/n): ").strip().lower()
+                    if choice in ['y', 'yes']:
+                        print("Processing audio...")
+                        process_audio_buffered()
+                    else:
+                        print("❌ Transcription canceled.")
+                        buffered_frames.clear()  # Clear the buffer
+                except EOFError:
+                    print("\nEOF detected, canceling transcription.")
+                    buffered_frames.clear()
+            else:
+                print("❌ Transcription canceled to save API costs.")
+                buffered_frames.clear()  # Clear the buffer
+        else:
+            # Normal processing - duration is within limits
+            print(f"📊 Recording duration: {format_duration(duration)} ✅")
+            print("Processing audio...")
+            process_audio_buffered()
+        
+        # Reset start time
+        buffered_recording_start_time = None
 
 
 # --- NEW: Live Transcription Display Functions ---
@@ -1373,12 +1518,16 @@ def _schedule_live_task():
 # --- Hotkey Callback for Live Mode ---
 def toggle_recording_live_sync():
     """Hotkey callback for live mode. Starts/stops recording and manages related resources."""
-    global live_recording_active, live_stop_event, live_transcription_task, live_main_loop, live_audio_queue, live_pyaudio_stream, audio, live_ws, last_transcript_text
+    global live_recording_active, live_stop_event, live_transcription_task, live_main_loop, live_audio_queue, live_pyaudio_stream, audio, live_ws, last_transcript_text, live_recording_start_time
 
     if not live_recording_active:
         # --- Start Live Recording ---
-        print("\n>>> Recording started (Live Realtime)... Press Ctrl+Q again to stop. <<<")
+        print("\n🎤 Recording started (Live Realtime)...")
+        print(f"Safety limit: {format_duration(max_recording_duration_seconds)}")
+        print("Press Ctrl+Q or middle mouse button again to stop.")
+        
         live_recording_active = True
+        live_recording_start_time = time.time()  # Track start time
         set_recording_cursor()
         last_transcript_text = "" # Reset last transcript text for this session
 
@@ -1423,6 +1572,7 @@ def toggle_recording_live_sync():
         except Exception as e:
             print(f"Error starting live PyAudio stream: {e}")
             live_recording_active = False # Reset state
+            live_recording_start_time = None
             restore_normal_cursor()
             stop_live_display() # Stop display if audio fails
             # Attempt to cancel the transcription task if it was scheduled
@@ -1431,9 +1581,21 @@ def toggle_recording_live_sync():
             live_pyaudio_stream = None # Ensure stream object is cleared
     else:
         # --- Stop Live Recording ---
-        print("\n>>> Recording stopped (Live Realtime). Finalizing... <<<")
+        print("\n🛑 Recording stopped (Live Realtime).")
+        
+        # Check recording duration 
+        exceeded, duration = check_recording_duration(live_recording_start_time, "live recording")
+        
         live_recording_active = False # Signal callback and receiver task to stop/finalize
         restore_normal_cursor()
+        
+        # Show duration info
+        if exceeded:
+            print(f"📊 Recording duration: {format_duration(duration)}")
+            print("⚠️  This recording exceeded the safety limit.")
+            print("Note: Live transcription has already been processed.")
+        else:
+            print(f"📊 Recording duration: {format_duration(duration)} ✅")
 
         # Stop PyAudio Stream safely
         stream_to_stop = live_pyaudio_stream # Use local ref
@@ -1493,6 +1655,9 @@ def toggle_recording_live_sync():
         # This should happen relatively quickly after stopping recording.
         # The display might show "Final: ..." before closing.
         stop_live_display()
+        
+        # Reset start time
+        live_recording_start_time = None
 
 
 # --- NEW: Mouse Button Support ---
@@ -1732,14 +1897,17 @@ if __name__ == "__main__":
             print("Note: Groq Whisper 3 Large is available as an alternative.")
 
     # === Ask user which transcription backend to use ===
-    print("\nSelect transcription backend (press Enter for default 1):")
-    print("  1. GPT-4o family (gpt-4o-transcribe / gpt-4o-mini-transcribe) – fastest & most accurate, but may truncate")
-    print("  2. Whisper-1 – slightly slower, rock-solid stability (recommended for long recordings)")
-    if use_groq_transcription:
-        print("  3. Groq Whisper 3 Large with correction – fast, accurate, with screenshot context")
-        print("  4. Groq Whisper 3 Large without correction – fast, accurate, transcription only")
+    def show_backend_menu():
+        print("\nSelect transcription backend (press Enter for default 1):")
+        print("  1. GPT-4o family (gpt-4o-transcribe / gpt-4o-mini-transcribe) – fastest & most accurate, but may truncate")
+        print("  2. Whisper-1 – slightly slower, rock-solid stability (recommended for long recordings)")
+        if use_groq_transcription:
+            print("  3. Groq Whisper 3 Large with correction – fast, accurate, with screenshot context")
+            print("  4. Groq Whisper 3 Large without correction – fast, accurate, transcription only")
+        print("  S. Settings (configure safety limits and other options)")
 
-    backend_range = "1-4" if use_groq_transcription else "1-2"
+    show_backend_menu()
+    backend_range = "1-4, S" if use_groq_transcription else "1-2, S"
     while True:
         try:
             backend_input = input(f"Backend ({backend_range}): ").strip()
@@ -1750,7 +1918,11 @@ if __name__ == "__main__":
             backend_input = "1"
             print("\nEOF detected, defaulting to GPT-4o family (option 1).")
 
-        if backend_input == "1":
+        if backend_input.lower() == "s":
+            settings_menu()
+            show_backend_menu()  # Re-display menu after settings
+            continue  # Return to backend selection after settings
+        elif backend_input == "1":
             user_transcription_backend = 1
             print("--> Using GPT-4o transcription models.")
             break
@@ -1768,9 +1940,10 @@ if __name__ == "__main__":
             break
         else:
             if use_groq_transcription:
-                print("Invalid input. Please enter 1, 2, 3, or 4 (or press Enter for default).")
+                print("Invalid input. Please enter 1, 2, 3, 4, or S (or press Enter for default).")
             else:
-                print("Invalid input. Please enter 1 or 2 (or press Enter for default).")
+                print("Invalid input. Please enter 1, 2, or S (or press Enter for default).")
+            show_backend_menu()  # Re-display menu after invalid input
 
     # === End backend selection ===
 

@@ -17,6 +17,9 @@ This application allows you to transcribe your speech to text using OpenAI's mod
   - Real-time Mode (instant transcription without correction)
   - Transcription-Only modes (with or without correction)
   - Groq Whisper 3 Large (with or without screenshot correction)
+- **Safety Features:**
+  - **Recording Duration Limit** - Configurable safety limit (default: 5 minutes) to prevent accidental long recordings that waste API credits
+  - **Settings Menu** - Easy access to configure safety limits and other options
 - Start/stop recording with Ctrl+Q or middle mouse button (scroll wheel click)
 - Visual recording indicator (mouse pointer animation during recording)
 - Live transcription display window (in Real-time Mode)
@@ -125,6 +128,7 @@ For the easiest setup on Windows, simply run:
    - **Option 2: Whisper-1** - Rock-solid stability, recommended for long recordings
    - **Option 3: Groq Whisper 3 Large with correction** - Fast, accurate, with screenshot context
    - **Option 4: Groq Whisper 3 Large without correction** - Fast, accurate, transcription only
+   - **Option S: Settings** - Configure safety limits and other options
 
 2. **Then select operation mode** (varies by backend selected):
 
@@ -154,6 +158,36 @@ For the easiest setup on Windows, simply run:
 5. The transcription will automatically be copied to your clipboard and pasted wherever your cursor is.
 
 6. To exit the application, press Ctrl+C in the terminal window.
+
+## Safety Features
+
+### Recording Duration Limit
+The application includes a built-in safety feature to prevent accidental long recordings that could consume excessive API credits:
+
+- **Default limit:** 5 minutes per recording
+- **Configurable:** Easily adjustable from 10 seconds to 60 minutes
+- **Smart warnings:** Shows duration info and gives options when limit is exceeded
+- **Cost protection:** Option to cancel transcription for long recordings
+
+### How it works:
+1. **During recording:** Shows the current safety limit when you start recording
+2. **When stopping:** Displays actual recording duration
+3. **If exceeded:** Offers three options:
+   - Transcribe anyway (uses API credits)
+   - Cancel transcription (saves costs)
+   - Change safety settings
+
+### Settings Menu
+Access the settings menu by selecting "S" when choosing your backend:
+
+- **Change Maximum Recording Duration:** Set custom time limits
+- **Reset to Default:** Return to 5-minute default
+- **Real-time configuration:** No need to restart the application
+
+**Example scenarios this prevents:**
+- Accidentally leaving recording on overnight
+- Forgetting to stop recording during long meetings
+- Unintended recordings from accidental hotkey presses
 
 ## How It Works
 
