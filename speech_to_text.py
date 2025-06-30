@@ -127,6 +127,7 @@ last_transcript_text = ""   # NEW: stores the latest full text
 
 # --- NEW: Transcription Backend Choice ---
 # 1 = GPT-4o family (default), 2 = Whisper-1 for maximum stability
+# 3 = Groq Whisper 3 Large with correction, 4 = Groq Whisper 3 Large without correction
 user_transcription_backend = 1  # Will be set by runtime prompt in main
 
 # --- NEW: Live Display Globals ---
@@ -374,51 +375,98 @@ def save_audio_chunk(chunk_frames, filename):
         return None
 
 def transcribe_file(file_path):
-    """Transcribe a single audio file using OpenAI API, falling back to Groq if available."""
+    """Transcribe a single audio file using selected backend (OpenAI, Groq, or fallback)."""
     global use_openai_transcription, use_groq_transcription, openai_client, groq_client, user_mode_selection, user_transcription_backend
-    transcription_text = ""
     
-    # Use OpenAI as primary transcription service
-    if use_openai_transcription and openai_client:
-        # Determine which OpenAI transcription model to use based on the backend the user selected
-        if user_transcription_backend == 2:
-            # Bullet-proof stability requested – use Whisper-1
-            model = "whisper-1"
+    # Primary Groq Whisper 3 Large backend (options 3 & 4)
+    if user_transcription_backend in [3, 4]:
+        if use_groq_transcription and groq_client:
+            if DEBUG_MODE: print("Transcribing with Groq Whisper 3 Large...")
+            try:
+                with open(file_path, "rb") as file:
+                    transcription = groq_client.audio.transcriptions.create(
+                        file=(os.path.basename(file_path), file.read()),
+                        model="whisper-large-v3", 
+                        response_format="text", 
+                        language="en"
+                    )
+                # Handle different response formats
+                if isinstance(transcription, str): 
+                    transcription_text = transcription
+                elif hasattr(transcription, 'text'): 
+                    transcription_text = transcription.text
+                else: 
+                    transcription_text = str(transcription)
+                
+                if DEBUG_MODE: print("Groq Whisper 3 Large transcription successful.")
+                return transcription_text
+            except Exception as groq_error:
+                print(f"Groq Whisper 3 Large transcription failed: {groq_error}")
+                # Fallback to OpenAI if available
+                if use_openai_transcription and openai_client:
+                    print("Falling back to OpenAI transcription...")
+                    # Continue to OpenAI section below
+                else:
+                    print("No fallback transcription service available.")
+                    return ""
         else:
-            # GPT-4o family selected – pick variant based on speed/quality preference
-            # Modes 1, 3, 4 use high-accuracy model; Modes 2, 5 use fast model
-            model = "gpt-4o-mini-transcribe" if user_mode_selection in [2, 5] else "gpt-4o-transcribe"
-        if DEBUG_MODE: print(f"Transcribing with OpenAI {model}...")
-        
-        try:
-            with open(file_path, "rb") as audio_file:
-                # Use selected model for transcription
-                transcription = openai_client.audio.transcriptions.create(
-                    model=model, file=audio_file, response_format="text"
-                )
-            # The response for 'text' format is directly the string
-            transcription_text = str(transcription)
-            if DEBUG_MODE: print("OpenAI transcription successful.")
-            return transcription_text
-        except Exception as openai_error:
-            print(f"OpenAI transcription failed: {openai_error}.")
-            if not use_groq_transcription: 
-                print("No fallback transcription service available.")
-                return "" 
-
-    # Fallback to Groq if available and configured
+            print("Groq service not available but was selected as primary backend.")
+            return ""
+    
+    # Primary OpenAI backend (options 1 & 2) or fallback from Groq
+    if user_transcription_backend in [1, 2, 3, 4]:  # Include 3,4 for fallback case
+        if use_openai_transcription and openai_client:
+            # Determine which OpenAI model to use
+            if user_transcription_backend == 2:
+                model = "whisper-1"  # Stability option
+            elif user_transcription_backend in [3, 4]:
+                model = "gpt-4o-transcribe"  # Fallback from Groq, use high-quality
+            else:
+                # GPT-4o family - choose based on mode
+                model = "gpt-4o-mini-transcribe" if user_mode_selection in [2, 5] else "gpt-4o-transcribe"
+            
+            if DEBUG_MODE: 
+                fallback_text = " (fallback)" if user_transcription_backend in [3, 4] else ""
+                print(f"Transcribing with OpenAI {model}{fallback_text}...")
+            
+            try:
+                with open(file_path, "rb") as audio_file:
+                    transcription = openai_client.audio.transcriptions.create(
+                        model=model, file=audio_file, response_format="text"
+                    )
+                transcription_text = str(transcription)
+                if DEBUG_MODE: print("OpenAI transcription successful.")
+                return transcription_text
+            except Exception as openai_error:
+                print(f"OpenAI transcription failed: {openai_error}")
+                # Only try Groq fallback if OpenAI was primary (not if we're already falling back)
+                if user_transcription_backend in [1, 2] and use_groq_transcription and groq_client:
+                    print("Falling back to Groq transcription...")
+                    # Continue to Groq fallback section below
+                else:
+                    print("No fallback transcription service available.")
+                    return ""
+        else:
+            print("OpenAI service not available.")
+            return ""
+    
+    # Groq fallback (when OpenAI primary fails)
     if use_groq_transcription and groq_client:
-        if DEBUG_MODE: print("Falling back to Groq transcription...")
+        if DEBUG_MODE: print("Using Groq as fallback transcription...")
         try:
             with open(file_path, "rb") as file:
                 transcription = groq_client.audio.transcriptions.create(
                     file=(os.path.basename(file_path), file.read()),
                     model="whisper-large-v3", response_format="text", language="en"
                 )
-            # Groq's text response might be directly a string or within an object
-            if isinstance(transcription, str): transcription_text = transcription
-            elif hasattr(transcription, 'text'): transcription_text = transcription.text
-            else: transcription_text = str(transcription) # Best guess
+            # Handle different response formats
+            if isinstance(transcription, str): 
+                transcription_text = transcription
+            elif hasattr(transcription, 'text'): 
+                transcription_text = transcription.text
+            else: 
+                transcription_text = str(transcription)
+            
             if DEBUG_MODE: print("Groq fallback transcription successful.")
             return transcription_text
         except Exception as groq_error:
@@ -1671,22 +1719,30 @@ if __name__ == "__main__":
         cleanup_on_exit() # Call cleanup manually as atexit might not run fully
         exit(1)
 
-    # Check essential services (OpenAI key is required for both modes)
+    # Check essential services (OpenAI key is required for most modes)
     if not use_openai_transcription:
-        print("\nERROR: OpenAI transcription is not available. This is required for both modes.")
+        print("\nERROR: OpenAI transcription is not available. This is required for most modes.")
         print("Please check your OPENAI_API_KEY in the .env file.")
         print("The application uses OpenAI's gpt-4o-transcribe model for transcription and GPT-4.1 for correction.")
-        cleanup_on_exit()
-        exit(1)
+        if not use_groq_transcription:
+            print("No alternative transcription services available.")
+            cleanup_on_exit()
+            exit(1)
+        else:
+            print("Note: Groq Whisper 3 Large is available as an alternative.")
 
     # === Ask user which transcription backend to use ===
     print("\nSelect transcription backend (press Enter for default 1):")
     print("  1. GPT-4o family (gpt-4o-transcribe / gpt-4o-mini-transcribe) – fastest & most accurate, but may truncate")
     print("  2. Whisper-1 – slightly slower, rock-solid stability (recommended for long recordings)")
+    if use_groq_transcription:
+        print("  3. Groq Whisper 3 Large with correction – fast, accurate, with screenshot context")
+        print("  4. Groq Whisper 3 Large without correction – fast, accurate, transcription only")
 
+    backend_range = "1-4" if use_groq_transcription else "1-2"
     while True:
         try:
-            backend_input = input("Backend (1-2): ").strip()
+            backend_input = input(f"Backend ({backend_range}): ").strip()
             if backend_input == "":
                 backend_input = "1"
                 print("No selection made. Defaulting to GPT-4o family.")
@@ -1702,23 +1758,51 @@ if __name__ == "__main__":
             user_transcription_backend = 2
             print("--> Using Whisper-1 for maximum stability.")
             break
+        elif backend_input == "3" and use_groq_transcription:
+            user_transcription_backend = 3
+            print("--> Using Groq Whisper 3 Large with correction.")
+            break
+        elif backend_input == "4" and use_groq_transcription:
+            user_transcription_backend = 4
+            print("--> Using Groq Whisper 3 Large without correction.")
+            break
         else:
-            print("Invalid input. Please enter 1 or 2 (or press Enter for default).")
+            if use_groq_transcription:
+                print("Invalid input. Please enter 1, 2, 3, or 4 (or press Enter for default).")
+            else:
+                print("Invalid input. Please enter 1 or 2 (or press Enter for default).")
 
     # === End backend selection ===
 
+    # Validate selected backend availability
+    if user_transcription_backend in [3, 4] and not use_groq_transcription:
+        print("\nERROR: Groq Whisper 3 Large was selected but Groq service is not available.")
+        print("Please check your GROQ_API_KEY in the .env file or select a different backend.")
+        cleanup_on_exit()
+        exit(1)
+
     # --- User Choice ---
     print("-" * 50)
-    print("Transcription & Correction Options:")
-    print(f"  - OpenAI gpt-4o-transcribe: {'ENABLED (Primary)' if use_openai_transcription else 'DISABLED (REQUIRED)'}")
-    print(f"  - GPT-4.1 Correction: {'ENABLED (Primary)' if use_openai_transcription else 'DISABLED (REQUIRED)'}")
-    print(f"  - Groq Whisper: {'ENABLED (Optional Fallback)' if use_groq_transcription else 'DISABLED (Optional)'}")
+    print("Available Services:")
+    print(f"  - OpenAI gpt-4o-transcribe: {'ENABLED' if use_openai_transcription else 'DISABLED (REQUIRED)'}")
+    print(f"  - GPT-4.1 Correction: {'ENABLED' if use_openai_transcription else 'DISABLED (REQUIRED)'}")
+    print(f"  - Groq Whisper 3 Large: {'ENABLED' if use_groq_transcription else 'DISABLED (Optional)'}")
     print(f"  - Claude Correction: {'ENABLED (Optional Fallback)' if use_claude_correction else 'DISABLED (Optional)'}")
     print("Note: Using a unified correction system prompt for all vision models")
     print("-" * 50)
 
     # Determine mode based on user input ONLY if vision model correction is available
-    if use_claude_correction:
+    if user_transcription_backend == 3:
+        # Groq Whisper 3 Large with correction - preset mode
+        user_wants_claude_correction = True
+        user_mode_selection = 1
+        print("Groq Whisper 3 Large with Screenshot Correction mode selected.")
+    elif user_transcription_backend == 4:
+        # Groq Whisper 3 Large without correction - preset mode
+        user_wants_claude_correction = False
+        user_mode_selection = 4
+        print("Groq Whisper 3 Large Transcription-Only mode selected.")
+    elif use_claude_correction:
         if user_transcription_backend == 2:
             # Whisper-1 backend - simplified options
             print("\nPlease select transcription mode (press Enter for Option 1):")
@@ -1814,6 +1898,16 @@ if __name__ == "__main__":
         mode_names = {
             1: "With Screenshot Correction (whisper-1 + GPT-4.1)",
             4: "Transcription Only (whisper-1)"
+        }
+    elif user_transcription_backend == 3:
+        # Groq Whisper 3 Large with correction
+        mode_names = {
+            1: "Groq Whisper 3 Large with Screenshot Correction"
+        }
+    elif user_transcription_backend == 4:
+        # Groq Whisper 3 Large without correction
+        mode_names = {
+            4: "Groq Whisper 3 Large Transcription Only"
         }
     else:
         # GPT-4o backend mode names
