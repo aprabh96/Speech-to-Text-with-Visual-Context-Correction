@@ -83,6 +83,7 @@ class AppConfig:
     
     # Recording settings
     hotkey: str = "ctrl+q"
+    enable_mouse_button: bool = True  # Middle mouse button recording (enabled by default)
     max_recording_duration: int = 300  # 5 minutes
     max_file_size: int = 25 * 1024 * 1024  # 25 MB
     
@@ -942,6 +943,8 @@ class SpeechToTextGUI:
                 self.system_tray.start_tray()
             
             print("Application initialized successfully")
+            print("📱 Recording Controls: Middle mouse button (scroll wheel click) or Ctrl+Q")
+            print("⚙️  Configure recording options in Settings tab")
             
         except Exception as e:
             messagebox.showerror("Initialization Error", f"Failed to initialize application: {e}")
@@ -1229,8 +1232,24 @@ class SpeechToTextGUI:
                                 relief='solid', bd=1)
         hotkey_entry.grid(row=0, column=1, sticky="w", padx=(5, 0), pady=2)
         
+        # Mouse button setting
+        ttk.Label(recording_frame, text="Enable Middle Mouse Button:").grid(row=1, column=0, sticky="w", pady=2)
+        self.mouse_button_var = tk.BooleanVar(value=self.config.enable_mouse_button)
+        mouse_check = ttk.Checkbutton(
+            recording_frame,
+            variable=self.mouse_button_var,
+            command=self._on_mouse_button_changed
+        )
+        mouse_check.grid(row=1, column=1, sticky="w", padx=(5, 0), pady=2)
+        
+        # Add helpful note about mouse button
+        mouse_note = tk.Label(recording_frame, 
+                             text="Click scroll wheel to record (enabled by default)",
+                             font=("Arial", 8), fg="gray")
+        mouse_note.grid(row=1, column=2, sticky="w", padx=(10, 0), pady=2)
+        
         # Max recording duration
-        ttk.Label(recording_frame, text="Max Recording Duration (seconds):").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Label(recording_frame, text="Max Recording Duration (seconds):").grid(row=2, column=0, sticky="w", pady=2)
         self.max_duration_var = tk.IntVar(value=self.config.max_recording_duration)
         ttk.Spinbox(
             recording_frame, 
@@ -1238,14 +1257,14 @@ class SpeechToTextGUI:
             to=3600, 
             textvariable=self.max_duration_var,
             width=10
-        ).grid(row=1, column=1, sticky="w", padx=(5, 0), pady=2)
+        ).grid(row=2, column=1, sticky="w", padx=(5, 0), pady=2)
         
         # Audio quality settings
-        ttk.Label(recording_frame, text="Sample Rate (Hz):").grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Label(recording_frame, text="Sample Rate (Hz):").grid(row=3, column=0, sticky="w", pady=2)
         self.sample_rate_var = tk.IntVar(value=self.config.rate)
         rate_combo = ttk.Combobox(recording_frame, textvariable=self.sample_rate_var, width=15, state="readonly")
         rate_combo['values'] = [16000, 22050, 24000, 44100, 48000]
-        rate_combo.grid(row=2, column=1, sticky="w", padx=(5, 0), pady=2)
+        rate_combo.grid(row=3, column=1, sticky="w", padx=(5, 0), pady=2)
         
         # UI Settings section
         ui_frame = ttk.LabelFrame(scrollable_frame, text="User Interface", padding=10)
@@ -1871,6 +1890,42 @@ class SpeechToTextGUI:
         self.config.auto_paste = self.auto_paste_var.get()
         # Save the updated config
         self.config.save_to_file()
+        
+    def _on_mouse_button_changed(self):
+        """Handle mouse button enable/disable change"""
+        self.config.enable_mouse_button = self.mouse_button_var.get()
+        # Save the updated config
+        self.config.save_to_file()
+        # Re-setup hotkeys to apply the change
+        self._setup_hotkeys()
+    
+    def _setup_hotkeys(self):
+        """Setup global hotkeys for recording"""
+        try:
+            # Clear any existing hotkeys first
+            self.hotkey_manager.unregister_all()
+            
+            # Register keyboard hotkey
+            if self.config.hotkey and self.config.hotkey.strip():
+                success = self.hotkey_manager.register_hotkey(self.config.hotkey, self._toggle_recording)
+                if success:
+                    print(f"Hotkey {self.config.hotkey} registered successfully")
+                else:
+                    print(f"Failed to register hotkey {self.config.hotkey}")
+            
+            # Register mouse button if enabled
+            if self.config.enable_mouse_button:
+                if MOUSE_AVAILABLE:
+                    mouse_success = self.hotkey_manager.register_mouse_button("middle", self._toggle_recording)
+                    if mouse_success:
+                        print("Middle mouse button registered successfully")
+                    else:
+                        print("Failed to register middle mouse button")
+                else:
+                    print("Mouse button functionality requested but mouse library not available")
+                    
+        except Exception as e:
+            print(f"Error setting up hotkeys: {e}")
     
     def _refresh_history(self):
         """Refresh the history display"""
@@ -2172,7 +2227,7 @@ This advanced speech-to-text application provides high-accuracy transcription wi
 🔧 Professional Features:
 • Persistent Session History: Transcripts saved across app restarts with search
 • Multiple Themes: Dark, Light, and Professional UI themes
-• Global Hotkeys: Ctrl+Q or middle mouse button for hands-free operation
+• Global Controls: Middle mouse button (default) + Ctrl+Q hotkey for hands-free operation
 • Configurable Settings: Audio devices, API keys, recording parameters
 • Export/Import: Save transcripts and settings for backup/sharing
 • Error Recovery: Robust clipboard handling and connection retry logic

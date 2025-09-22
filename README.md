@@ -2,7 +2,7 @@
 
 **Developed by Psynect Corp** - [www.psynect.ai](https://www.psynect.ai)
 
-An advanced speech-to-text application with both **CLI** and **GUI** interfaces that provides high-accuracy transcription with intelligent context correction. Features multiple AI backends, persistent visual recording indicators, and seamless workflow integration for professional use.
+An advanced speech-to-text application with both **CLI** and **GUI** interfaces that provides high-accuracy transcription with intelligent context correction. Features multiple AI backends, middle mouse button recording (default), persistent visual indicators, and seamless workflow integration for professional use.
 
 ## 🚀 Quick Start
 
@@ -23,7 +23,7 @@ python speech_to_text.py
 ### Core Functionality
 - **Multiple AI Backends**: OpenAI (GPT-4o, Whisper-1), Groq Whisper 3 Large
 - **Screenshot Context Correction**: Uses vision models (GPT-4.1, Claude) to improve accuracy
-- **Global Hotkeys**: Ctrl+Q or middle mouse button for hands-free operation
+- **Global Controls**: Middle mouse button (default) + Ctrl+Q hotkey for hands-free operation
 - **Auto-paste**: Automatic clipboard copy and paste functionality
 
 ### GUI Application Features
@@ -80,9 +80,10 @@ SpeechToTextWithScreenContext/
 ## 🎯 Usage
 
 ### Recording Controls
-- **Hotkey**: Ctrl+Q (configurable in GUI)
-- **Mouse**: Middle mouse button (scroll wheel click)
-- **GUI**: Record/Stop button in interface
+- **Middle Mouse Button**: Click scroll wheel to record (enabled by default)
+- **Hotkey**: Ctrl+Q keyboard shortcut (always available)
+- **GUI Button**: Record/Stop button in interface
+- **Settings**: Both recording methods can be configured in Settings tab
 
 ### Transcription Modes
 1. **High-Accuracy Mode** (gpt-4o-transcribe + GPT-4.1)
