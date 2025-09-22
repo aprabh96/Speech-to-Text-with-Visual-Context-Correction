@@ -2,7 +2,7 @@
 
 **Developed by Psynect Corp** - [www.psynect.ai](https://www.psynect.ai)
 
-A sophisticated speech-to-text application with both **CLI** and **GUI** interfaces that uses screenshot-based visual context to improve transcription accuracy using multiple AI models.
+An advanced speech-to-text application with both **CLI** and **GUI** interfaces that provides high-accuracy transcription with intelligent context correction. Features multiple AI backends, persistent visual recording indicators, and seamless workflow integration for professional use.
 
 ## 🚀 Quick Start
 
@@ -107,8 +107,17 @@ SpeechToTextWithScreenContext/
 ## 📞 Support
 
 For support, issues, or feature requests:
-- Visit: [www.psynect.ai](https://www.psynect.ai)
+- Create an issue on this GitHub repository
+- Check existing issues and discussions
 
 ## 📄 License
+
+This project is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License.
+
+✅ **You can**: Use, share, and modify the software for personal and educational purposes  
+✅ **You must**: Give credit and share any modifications under the same license  
+❌ **You cannot**: Use this software for commercial purposes  
+
+See the [LICENSE](LICENSE) file for full details.
 
 Professional Speech-to-Text Application by Psynect Corp.

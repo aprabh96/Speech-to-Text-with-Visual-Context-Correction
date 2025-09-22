@@ -2153,20 +2153,37 @@ class SpeechToTextGUI:
     def _show_about(self):
         """Show about dialog"""
         about_text = """Professional Speech-to-Text Application
-        
+
 Developed by Psynect Corp
 www.psynect.ai
 
-Features:
-• Multiple AI transcription backends
-• Real-time and buffered recording modes
-• Screenshot-based context correction
-• Comprehensive transcript history
-• Professional themes and UI
-• Global hotkey support
-• Export and import capabilities
+For support and issues, visit this GitHub repository
 
-Version 2.0"""
+This advanced speech-to-text application provides high-accuracy transcription with intelligent context correction. Features multiple AI backends, persistent visual recording indicators, and seamless workflow integration.
+
+🎯 Core Features:
+• Multiple AI Backends: OpenAI (GPT-4o, Whisper-1), Groq Whisper 3 Large, Anthropic Claude
+• Screenshot Context Correction: Uses vision models to improve transcription accuracy
+• 7 Transcription Modes: High-accuracy, fast-processing, real-time, and transcription-only modes
+• Persistent Recording Indicator: Always-on-top visual feedback during recording
+• System Tray Integration: Background operation with tray controls
+• Auto-paste Functionality: Seamless clipboard integration without focus stealing
+
+🔧 Professional Features:
+• Persistent Session History: Transcripts saved across app restarts with search
+• Multiple Themes: Dark, Light, and Professional UI themes
+• Global Hotkeys: Ctrl+Q or middle mouse button for hands-free operation
+• Configurable Settings: Audio devices, API keys, recording parameters
+• Export/Import: Save transcripts and settings for backup/sharing
+• Error Recovery: Robust clipboard handling and connection retry logic
+
+🚀 Workflow Integration:
+• Auto-minimize: Hide to tray during recording for distraction-free use
+• Focus Preservation: Auto-paste without stealing focus from target applications
+• Real-time Processing: Live transcription with instant visual feedback
+• Cross-session Persistence: Settings and history maintained between sessions
+
+Version 3.0 - GitHub Ready Edition"""
         
         messagebox.showinfo("About", about_text)
     
