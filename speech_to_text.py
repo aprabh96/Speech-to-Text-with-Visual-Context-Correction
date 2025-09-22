@@ -152,8 +152,8 @@ user_mode_selection = 1 # Default: high-quality buffered mode
 user_wants_claude_correction = False # Default, set by user prompt
 
 # --- Directory & Path Setup ---
-screenshots_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
-recordings_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings") # Still save full recording at end
+screenshots_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "screenshots")
+recordings_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "recordings") # Still save full recording at end
 os.makedirs(screenshots_dir, exist_ok=True)
 os.makedirs(recordings_dir, exist_ok=True)
 SCREENSHOT_FILENAME = "latest_screenshot.jpg"

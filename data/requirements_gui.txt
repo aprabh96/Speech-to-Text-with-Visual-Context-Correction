@@ -1,0 +1,28 @@
+# Core GUI and System Requirements
+# tkinter - included with Python, no need to install
+Pillow>=9.0.0  # PIL for image handling
+pyautogui>=0.9.50  # Screen automation
+pystray>=0.19.0  # System tray integration
+
+# Audio Processing
+pyaudio>=0.2.11  # Audio recording
+soundfile>=0.12.0  # Audio file handling
+numpy>=1.21.0  # Audio data processing
+
+# AI Services and APIs
+openai>=1.0.0  # OpenAI API client
+groq>=0.4.0  # Groq API client
+anthropic>=0.7.0  # Anthropic Claude API client
+
+# Utilities and System Integration
+keyboard>=0.13.5  # Global hotkeys
+mouse>=0.7.0  # Mouse event handling
+pyperclip>=1.8.0  # Clipboard operations
+python-dotenv>=0.19.0  # Environment variable management
+
+# Screenshot and System APIs (Windows)
+mss>=6.1.0  # Multi-monitor screenshot
+pywin32>=300  # Windows API access
+
+# Networking (for real-time features)
+websockets>=10.0  # WebSocket client

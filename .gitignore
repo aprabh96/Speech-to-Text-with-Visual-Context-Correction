@@ -6,6 +6,7 @@ ENV/
 
 # Environment variables
 .env
+data/.env
 
 # Python
 __pycache__/
@@ -46,6 +47,10 @@ wheels/
 .DS_Store
 Thumbs.db 
 
-# Project specific
-screenshots/
-recordings/ 
+# Project specific (all app data lives under data/)
+data/screenshots/
+data/recordings/
+data/transcript_history.json
+data/app_config.json
+data/*.wav
+data/*.jpg
