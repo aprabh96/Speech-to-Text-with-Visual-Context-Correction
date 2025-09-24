@@ -219,9 +219,22 @@ class AudioEngine:
     def _recording_loop(self):
         """Recording loop running in separate thread"""
         chunk_samples = int(self.config.rate * (self.config.chunk_ms / 1000))
+        max_frames = 15000  # Prevent unlimited memory growth (about 5 minutes at 24kHz)
         
         while self.recording_active and self.recording_stream:
             try:
+                # Check for memory limit to prevent crashes
+                if len(self.recorded_frames) >= max_frames:
+                    print(f"Warning: Recording reached maximum frame limit ({max_frames}), stopping to prevent memory issues")
+                    self.recording_active = False
+                    break
+                
+                # Check if stream is still valid before reading
+                if not hasattr(self.recording_stream, 'read'):
+                    print("Warning: Recording stream invalid, stopping")
+                    self.recording_active = False
+                    break
+                
                 data = self.recording_stream.read(chunk_samples, exception_on_overflow=False)
                 self.recorded_frames.append(data)
                 
@@ -234,6 +247,7 @@ class AudioEngine:
                         
             except Exception as e:
                 print(f"Error in recording loop: {e}")
+                self.recording_active = False
                 break
     
     def save_recording(self, filename: str) -> bool:
@@ -254,19 +268,33 @@ class AudioEngine:
     
     def cleanup(self):
         """Clean up audio resources"""
+        # Stop recording if active
+        if self.recording_active:
+            self.recording_active = False
+            time.sleep(0.1)  # Brief wait for recording loop to exit
+        
+        # Clear recorded frames to free memory
+        self.recorded_frames.clear()
+        self.recorded_frames = []
+        
         if self.recording_stream:
             try:
-                if self.recording_stream.is_active():
+                if hasattr(self.recording_stream, 'is_active') and self.recording_stream.is_active():
                     self.recording_stream.stop_stream()
-                self.recording_stream.close()
-            except:
-                pass
+                if hasattr(self.recording_stream, 'close'):
+                    self.recording_stream.close()
+            except Exception as e:
+                print(f"Error cleaning up recording stream: {e}")
+            finally:
+                self.recording_stream = None
                 
         if self.audio:
             try:
                 self.audio.terminate()
-            except:
-                pass
+            except Exception as e:
+                print(f"Error terminating PyAudio: {e}")
+            finally:
+                self.audio = None
 
 
 class TranscriptionEngine:
@@ -1501,6 +1529,10 @@ class SpeechToTextGUI:
             if not self.audio_engine.save_recording(temp_file):
                 self._recording_error("Failed to save recording")
                 return
+            
+            # Clear the recorded frames after saving to prevent memory leaks
+            self.audio_engine.recorded_frames.clear()
+            self.audio_engine.recorded_frames = []
             
             # Update progress
             self.root.after(0, lambda: self.progress_var.set(25))

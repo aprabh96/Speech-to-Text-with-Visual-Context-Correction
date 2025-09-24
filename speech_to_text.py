@@ -649,8 +649,9 @@ def process_audio_buffered():
     if DEBUG_MODE: 
         print(f"Processing {total_frames} audio frames (estimated {estimated_duration:.2f} seconds)")
     
-    # Clear global buffer for next recording
+    # Clear global buffer for next recording - CRITICAL for preventing memory leaks
     buffered_frames.clear()
+    buffered_frames = []  # Ensure it's a fresh list
 
     # Save the full recording
     full_audio_path = save_audio_chunk(frames_to_save, RECORDING_PATH)
@@ -698,9 +699,17 @@ def record_audio_buffered(stream):
     global buffered_recording # Use global flag to control loop
     print("Buffered recording thread started.")
     frames_this_recording = [] # Use local list within thread
+    max_frames = 10000  # Prevent unlimited memory growth (about 3.5 minutes at 24kHz)
+    
     try:
         while buffered_recording: # Check flag each iteration
             try:
+                # Check for memory limit to prevent crashes
+                if len(frames_this_recording) >= max_frames:
+                    print(f"Warning: Recording reached maximum frame limit ({max_frames}), stopping to prevent memory issues")
+                    buffered_recording = False
+                    break
+                
                 # Blocking read, will wait for data
                 data = stream.read(CHUNK_SAMPLES, exception_on_overflow=False) # Don't raise exception on overflow
                 frames_this_recording.append(data)
@@ -783,16 +792,20 @@ def toggle_recording_buffered():
         
         # Now stop and close the stream after the recording thread has finished
         stream_to_close = buffered_audio_stream # Local ref for safety
-        buffered_audio_stream = None # Clear global ref
+        buffered_audio_stream = None # Clear global ref immediately
         if stream_to_close:
             try:
                 # Check if stream is active before stopping (it might have stopped due to error)
-                if stream_to_close.is_active():
+                if hasattr(stream_to_close, 'is_active') and stream_to_close.is_active():
                     stream_to_close.stop_stream()
-                stream_to_close.close()
+                if hasattr(stream_to_close, 'close'):
+                    stream_to_close.close()
                 if DEBUG_MODE: print("Buffered PyAudio stream stopped and closed.")
             except Exception as e: 
                 if DEBUG_MODE: print(f"Error stopping/closing buffered stream: {e}")
+            finally:
+                # Ensure reference is cleared even if close fails
+                stream_to_close = None
 
         # Handle duration safety check
         if exceeded:
@@ -828,15 +841,23 @@ def toggle_recording_buffered():
                     buffered_frames.clear()
             else:
                 print("❌ Transcription canceled to save API costs.")
-                buffered_frames.clear()  # Clear the buffer
+                # Clear all recording-related state to prevent memory leaks
+                buffered_frames.clear()
+                buffered_frames = []
+                buffered_screenshot = None
+                buffered_screenshot_path = None
         else:
             # Normal processing - duration is within limits
             print(f"📊 Recording duration: {format_duration(duration)} ✅")
             print("Processing audio...")
             process_audio_buffered()
         
-        # Reset start time
+        # Reset all global state variables for next recording
         buffered_recording_start_time = None
+        # Ensure cleanup of any remaining state
+        if not buffered_frames:  # Only clear if not already processed
+            buffered_screenshot = None
+            buffered_screenshot_path = None
 
 
 # --- NEW: Live Transcription Display Functions ---
@@ -1472,16 +1493,25 @@ async def transcription_session_manager_live(queue):
              receiver_task.cancel()
 
         # Ensure WebSocket connection is closed if it exists and is in the OPEN state
-        if ws and getattr(ws, 'open', False):
-            print("Closing WebSocket connection (State: OPEN) in finally block...")
+        if ws:
             try:
-                await ws.close(code=1000, reason="Client closing") # Close gracefully
+                # Check if connection is still open before trying to close
+                if hasattr(ws, 'open') and ws.open:
+                    print("Closing WebSocket connection (State: OPEN) in finally block...")
+                    await asyncio.wait_for(ws.close(code=1000, reason="Client closing"), timeout=2.0)
+                    print("WebSocket closed successfully.")
+                elif hasattr(ws, 'closed') and ws.closed:
+                    print("WebSocket connection was already closed.")
+                else:
+                    print("WebSocket connection state unknown, skipping close.")
+            except asyncio.TimeoutError:
+                print("Timeout while closing WebSocket connection.")
             except Exception as close_err:
                 print(f"Error during WebSocket close: {close_err}")
-        elif ws: # If ws exists but is not open (ws.open is False)
-            ws_state_closed = getattr(ws, 'closed', 'N/A') # Safely get 'closed' attr if it exists
-            print(f"WebSocket connection was not in OPEN state (State: open={getattr(ws, 'open', 'N/A')}, closed={ws_state_closed}) in finally block. No close attempt needed.")
-        else: # If ws is None (connection likely failed before assignment)
+            finally:
+                # Clear the reference regardless of close success
+                ws = None
+        else:
             print("WebSocket connection object (ws) is None in finally block.")
 
     # Return the dictionary containing the final transcript or error message
@@ -1604,11 +1634,16 @@ def toggle_recording_live_sync():
             print("Stopping PyAudio stream...")
             try:
                 # Check if active first to avoid errors if already stopped
-                if stream_to_stop.is_active():
+                if hasattr(stream_to_stop, 'is_active') and stream_to_stop.is_active():
                     stream_to_stop.stop_stream()
-                stream_to_stop.close()
+                if hasattr(stream_to_stop, 'close'):
+                    stream_to_stop.close()
                 print("Live PyAudio stream stopped and closed.")
-            except Exception as e: print(f"Error stopping live PyAudio: {e}")
+            except Exception as e: 
+                print(f"Error stopping live PyAudio: {e}")
+            finally:
+                # Force cleanup of stream reference
+                stream_to_stop = None
 
         # Signal the sender task to stop by putting None in the audio queue
         if live_main_loop and live_audio_queue:
@@ -1878,9 +1913,17 @@ if __name__ == "__main__":
         print("Initializing PyAudio...")
         audio = pyaudio.PyAudio()
         print("PyAudio initialized.")
+        # Test PyAudio by getting device count (this can fail even if init succeeds)
+        device_count = audio.get_device_count()
+        print(f"Found {device_count} audio devices.")
     except Exception as e:
         print(f"Fatal Error: Could not initialize PyAudio: {e}")
         # Can't run without audio, exit gracefully
+        if audio:
+            try:
+                audio.terminate()
+            except:
+                pass
         cleanup_on_exit() # Call cleanup manually as atexit might not run fully
         exit(1)
 
