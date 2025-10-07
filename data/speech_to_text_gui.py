@@ -130,7 +130,7 @@ class AppConfig:
 
 class AudioEngine:
     """Handles all audio recording and processing functionality"""
-    
+
     def __init__(self, config: AppConfig):
         self.config = config
         self.audio = None
@@ -138,20 +138,86 @@ class AudioEngine:
         self.recording_active = False
         self.recorded_frames = []
         self.recording_start_time = None
-        
+        self.last_error_message = ""
+
         # Initialize PyAudio
+        if not self._reinitialize_audio(log_message="PyAudio initialized successfully"):
+            raise RuntimeError("Failed to initialize PyAudio. Check audio devices.")
+
+    def _reinitialize_audio(self, log_message: str = "PyAudio reinitialized successfully") -> bool:
+        """Tear down the current PyAudio instance and create a new one."""
+        # Close any existing stream references before tearing down
+        if self.recording_stream:
+            try:
+                if hasattr(self.recording_stream, 'is_active') and self.recording_stream.is_active():
+                    self.recording_stream.stop_stream()
+                if hasattr(self.recording_stream, 'close'):
+                    self.recording_stream.close()
+            except Exception as stream_error:
+                print(f"Error closing existing stream during reinit: {stream_error}")
+            finally:
+                self.recording_stream = None
+
+        if self.audio:
+            try:
+                self.audio.terminate()
+            except Exception as term_error:
+                print(f"Error terminating PyAudio during reinit: {term_error}")
+
         try:
             self.audio = pyaudio.PyAudio()
-            print("PyAudio initialized successfully")
+            self.last_error_message = ""
+            print(log_message)
+            return True
         except Exception as e:
-            raise RuntimeError(f"Failed to initialize PyAudio: {e}")
-    
+            self.audio = None
+            self.last_error_message = str(e)
+            print(f"Failed to (re)initialize PyAudio: {e}")
+            return False
+
+    def ensure_audio_ready(self) -> bool:
+        """Ensure an active PyAudio instance exists before starting a stream."""
+        if self.audio is None:
+            return self._reinitialize_audio()
+        return True
+
+    def _should_reset_audio(self, error: Exception) -> bool:
+        """Determine if an audio error should trigger a PyAudio reset."""
+        if isinstance(error, (OSError, IOError)):
+            return True
+
+        message = str(error).lower()
+        keywords = [
+            "device",
+            "pa",
+            "invalid",
+            "overflow",
+            "underflow",
+            "bad file descriptor",
+        ]
+        return any(keyword in message for keyword in keywords)
+
+    def _attempt_recovery_from_error(self, error: Exception, context: str = ""):
+        """Attempt to recover from an audio failure by reinitializing PyAudio."""
+        self.last_error_message = str(error)
+        if self._should_reset_audio(error):
+            print(f"Attempting PyAudio recovery after error{f' in {context}' if context else ''}: {error}")
+            success = self._reinitialize_audio(log_message="PyAudio recovered after device error")
+            if not success:
+                print("PyAudio recovery failed. Audio recording may remain unavailable until devices are restored.")
+
+    def get_sample_width(self) -> int:
+        """Return the sample width for the configured audio format."""
+        if not self.ensure_audio_ready():
+            raise RuntimeError("PyAudio is not available")
+        return self.audio.get_sample_size(self.config.format)
+
     def get_audio_devices(self) -> List[Dict]:
         """Get list of available audio input devices"""
         devices = []
-        if not self.audio:
+        if not self.ensure_audio_ready():
             return devices
-            
+
         try:
             for i in range(self.audio.get_device_count()):
                 device_info = self.audio.get_device_info_by_index(i)
@@ -171,10 +237,13 @@ class AudioEngine:
         """Start audio recording"""
         if self.recording_active:
             return False
-            
+
+        if not self.ensure_audio_ready():
+            return False
+
         try:
             chunk_samples = int(self.config.rate * (self.config.chunk_ms / 1000))
-            
+
             self.recording_stream = self.audio.open(
                 format=self.config.format,
                 channels=self.config.channels,
@@ -188,23 +257,24 @@ class AudioEngine:
             self.recorded_frames.clear()  # Clear any previous frames before starting new recording
             self.recorded_frames = []      # Ensure fresh list
             self.recording_start_time = time.time()
-            
+
             # Start recording thread
             threading.Thread(target=self._recording_loop, daemon=True).start()
             return True
-            
+
         except Exception as e:
             print(f"Error starting recording: {e}")
+            self._attempt_recovery_from_error(e, context="start_recording")
             return False
-    
+
     def stop_recording(self) -> Tuple[bool, float]:
         """Stop audio recording and return success status and duration"""
         if not self.recording_active:
             return False, 0.0
-            
+
         self.recording_active = False
         duration = time.time() - self.recording_start_time if self.recording_start_time else 0
-        
+
         # Stop and close stream
         if self.recording_stream:
             try:
@@ -212,11 +282,12 @@ class AudioEngine:
                 self.recording_stream.close()
             except Exception as e:
                 print(f"Error stopping recording stream: {e}")
+                self._attempt_recovery_from_error(e, context="stop_recording")
             finally:
                 self.recording_stream = None
-                
+
         return True, duration
-    
+
     def _recording_loop(self):
         """Recording loop running in separate thread"""
         chunk_samples = int(self.config.rate * (self.config.chunk_ms / 1000))
@@ -245,12 +316,13 @@ class AudioEngine:
                     if duration > self.config.max_recording_duration:
                         self.recording_active = False
                         break
-                        
+
             except Exception as e:
                 print(f"Error in recording loop: {e}")
+                self._attempt_recovery_from_error(e, context="recording_loop")
                 self.recording_active = False
                 break
-    
+
     def get_fallback_documents_dir(self):
         """Get the user's Documents folder as fallback location."""
         try:
@@ -277,7 +349,7 @@ class AudioEngine:
         try:
             with wave.open(filename, 'wb') as wf:
                 wf.setnchannels(self.config.channels)
-                wf.setsampwidth(self.audio.get_sample_size(self.config.format))
+                wf.setsampwidth(self.get_sample_width())
                 wf.setframerate(self.config.rate)
                 wf.writeframes(b''.join(self.recorded_frames))
             return True
@@ -304,13 +376,13 @@ class AudioEngine:
             try:
                 # Ensure directory exists
                 os.makedirs(os.path.dirname(filename), exist_ok=True)
-                
+
                 with wave.open(filename, 'wb') as wf:
                     wf.setnchannels(self.config.channels)
-                    wf.setsampwidth(self.audio.get_sample_size(self.config.format))
+                    wf.setsampwidth(self.get_sample_width())
                     wf.setframerate(self.config.rate)
                     wf.writeframes(b''.join(self.recorded_frames))
-                
+
                 # Verify file was created and has reasonable size
                 if os.path.exists(filename) and os.path.getsize(filename) > 100:
                     return True
@@ -408,6 +480,10 @@ class AudioEngine:
                 print(f"Error terminating PyAudio: {e}")
             finally:
                 self.audio = None
+
+    def recover_after_error(self) -> bool:
+        """Public helper to ensure PyAudio is ready after an error from higher layers."""
+        return self.ensure_audio_ready()
 
 
 class TranscriptionEngine:
@@ -1218,7 +1294,7 @@ class SpeechToTextGUI:
         self.hotkey_manager = HotkeyManager()
         self.transcript_history = TranscriptHistory()
         self.system_tray = None
-        
+
         # GUI components
         self.main_frame = None
         self.control_frame = None
@@ -1227,12 +1303,22 @@ class SpeechToTextGUI:
         self.progress_var = None
         self.recording_indicator = None  # Recording overlay window
         self.status_var = None
-        
+        self.reprocess_button = None
+
         # Recording state
         self.is_recording = False
         self.current_transcript = ""
         self.recording_timer = None
-        
+        self.is_reprocessing = False
+
+        # Last-run context for recovery/reprocessing
+        self.last_recording_primary_path = None
+        self.last_recording_backup_path = None
+        self.last_recording_timestamp = None
+        self.last_screenshot_image = None
+        self.last_screenshot_path = None
+        self.last_transcript_text = ""
+
         self._initialize_application()
     
     def _initialize_application(self):
@@ -1457,19 +1543,29 @@ class SpeechToTextGUI:
         # Action buttons frame
         action_frame = ttk.Frame(transcript_frame)
         action_frame.pack(fill=tk.X, pady=(10, 0))
-        
+
         ttk.Button(action_frame, text="Copy", command=self._copy_transcript).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(action_frame, text="Clear", command=self._clear_transcript).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(action_frame, text="Export...", command=self._export_transcript).pack(side=tk.LEFT, padx=(0, 5))
-        
+        self.reprocess_button = ttk.Button(
+            action_frame,
+            text="Reprocess Last Recording",
+            command=self._reprocess_last_recording,
+            state=tk.DISABLED
+        )
+        self.reprocess_button.pack(side=tk.LEFT, padx=(0, 5))
+
         # Auto-paste option
         self.auto_paste_var = tk.BooleanVar(value=self.config.auto_paste)
         ttk.Checkbutton(
-            action_frame, 
-            text="Auto-paste after transcription", 
+            action_frame,
+            text="Auto-paste after transcription",
             variable=self.auto_paste_var,
             command=self._on_auto_paste_changed
         ).pack(side=tk.RIGHT)
+
+        # Ensure reprocess button reflects availability on startup
+        self._update_reprocess_button_state()
     
     def _create_settings_tab(self, parent):
         """Create the settings configuration tab"""
@@ -1733,41 +1829,48 @@ class SpeechToTextGUI:
         """Start audio recording"""
         if self.is_recording:
             return
-            
-        # Update UI
+
+        if self.is_reprocessing:
+            messagebox.showinfo("Recording", "Please wait for reprocessing to finish before starting a new recording.")
+            return
+
+        if not self.audio_engine.start_recording():
+            error_message = self.audio_engine.last_error_message or "Failed to start recording"
+            self._recording_error(error_message)
+            if self.audio_engine:
+                self.audio_engine.recover_after_error()
+            self._update_reprocess_button_state()
+            return
+
+        # Update UI after successful start
         self.is_recording = True
         self.record_button.config(text="🛑 Stop Recording")
         self.recording_status.config(text="Recording...")
         self.status_var.set("Recording in progress...")
-        
+
         # Show recording indicator overlay
         self._show_recording_indicator()
-        
+
         # Clear previous transcript
         self.transcription_display.delete(1.0, tk.END)
-        
-        # Start recording
-        if self.audio_engine.start_recording():
-            self._start_recording_timer()
-            
-            # Show progress
-            self.progress_var.set(0)
-            self.progress_bar.config(mode='indeterminate')
-            self.progress_bar.start()
-            
+
+        # Start timer and progress indicator
+        self._start_recording_timer()
+        self.progress_var.set(0)
+        self.progress_bar.config(mode='indeterminate')
+        self.progress_bar.start()
+
         # Auto-minimize if enabled
         if self.config.auto_minimize:
             if self.system_tray and PYSTRAY_AVAILABLE:
                 self.system_tray.minimize_to_tray()
             else:
                 self.root.iconify()
-        
+
         # Update tray icon
         if self.system_tray:
             self.system_tray.update_icon_recording(True)
-        else:
-            self._recording_error("Failed to start recording")
-    
+
     def _stop_recording(self):
         """Stop audio recording and process"""
         if not self.is_recording:
@@ -1841,61 +1944,104 @@ class SpeechToTextGUI:
                 print("⚠️  Audio recording saved but may be corrupted. Processing will continue.")
             else:
                 print(f"✅ Audio file size looks good: {file_size_mb:.2f} MB")
-            
-            # Use the successfully saved path for processing
-            temp_file = saved_path
-            
+
+            # Persist details for recovery/reprocessing
+            self.last_recording_primary_path = saved_path
+            self.last_recording_backup_path = backup_path
+            self.last_recording_timestamp = datetime.now()
+            self.root.after(0, self._update_reprocess_button_state)
+
             # NOTE: Do NOT clear recorded_frames here during processing!
             # This causes race conditions with the recording thread.
             # Frames will be cleared when the next recording starts or in cleanup.
-            
+
             # Update progress
             self.root.after(0, lambda: self.progress_var.set(25))
-            
+
             # Capture screenshot if correction is enabled
             screenshot = None
+            screenshot_path = None
             if self.config.use_correction:
-                screenshot, _ = self.screenshot_engine.capture_screenshot()
-                self.root.after(0, lambda: self.progress_var.set(40))
-            
-            # Transcribe audio
-            def progress_callback(message, progress):
-                self.root.after(0, lambda: self.status_var.set(message))
-                self.root.after(0, lambda: self.progress_var.set(progress))
-            
-            success, transcript = self.transcription_engine.transcribe_file(temp_file, progress_callback)
-            
-            if success:
-                # Apply correction if enabled and screenshot available
-                if self.config.use_correction and screenshot:
-                    self.root.after(0, lambda: self.status_var.set("Applying context correction..."))
-                    self.root.after(0, lambda: self.progress_var.set(85))
-                    
-                    # Apply correction using vision models
-                    final_transcript = self._apply_correction(transcript, screenshot)
-                else:
-                    final_transcript = transcript
-                
-                # Update UI with final result
-                self.root.after(0, lambda: self._transcription_complete(final_transcript))
-                
-                # Add to history
-                mode_text = self.mode_var.get()
-                self.transcript_history.add_transcript(final_transcript, mode=mode_text)
-                
+                try:
+                    screenshot, screenshot_path = self.screenshot_engine.capture_screenshot()
+                    if screenshot_path:
+                        print(f"📸 Screenshot saved to: {screenshot_path}")
+                    self.root.after(0, lambda: self.progress_var.set(40))
+                except Exception as capture_error:
+                    print(f"Screenshot capture failed: {capture_error}")
+                    screenshot = None
+                    screenshot_path = None
+
+            # Store last screenshot for potential reprocessing
+            if screenshot is not None:
+                try:
+                    self.last_screenshot_image = screenshot.copy()
+                except Exception:
+                    self.last_screenshot_image = screenshot
             else:
-                self.root.after(0, lambda: self._recording_error(f"Transcription failed: {transcript}"))
-            
-            # Clean up temp file
-            try:
-                os.remove(temp_file)
-            except:
-                pass
-                
+                self.last_screenshot_image = None
+            self.last_screenshot_path = screenshot_path
+
+            # Run the transcription/correction pipeline on the saved audio
+            self._run_transcription_pipeline(saved_path, screenshot, triggered_by_reprocess=False)
+
         except Exception as e:
             error_msg = f"Processing error: {e}"
             self.root.after(0, lambda msg=error_msg: self._recording_error(msg))
-    
+
+    def _run_transcription_pipeline(self, audio_path: str, screenshot: Optional[Image.Image], triggered_by_reprocess: bool = False):
+        """Run transcription (and optional correction) for the provided audio file."""
+
+        def progress_callback(message, progress):
+            self.root.after(0, lambda: self.status_var.set(message))
+            self.root.after(0, lambda: self.progress_var.set(progress))
+
+        if triggered_by_reprocess:
+            self.root.after(0, self._prepare_progress_bar_for_reprocess)
+
+        try:
+            success, transcript = self.transcription_engine.transcribe_file(audio_path, progress_callback)
+        except Exception as e:
+            success = False
+            transcript = f"Transcription error: {e}"
+
+        if success:
+            final_transcript = transcript
+            if self.config.use_correction and screenshot:
+                self.root.after(0, lambda: self.status_var.set("Applying context correction..."))
+                self.root.after(0, lambda: self.progress_var.set(85))
+                final_transcript = self._apply_correction(transcript, screenshot)
+
+            def on_success(result_text=final_transcript):
+                self._transcription_complete(result_text)
+                if triggered_by_reprocess:
+                    self.recording_status.config(text="Reprocess complete")
+                    self.status_var.set(f"Reprocessed {len(result_text)} characters")
+                mode_text = self.mode_var.get()
+                history_mode = f"{mode_text} (Reprocessed)" if triggered_by_reprocess else mode_text
+                self.transcript_history.add_transcript(result_text, mode=history_mode)
+                self.is_reprocessing = False
+                self._update_reprocess_button_state()
+
+            self.root.after(0, on_success)
+        else:
+            error_message = transcript
+
+            def on_failure(message=error_message):
+                if triggered_by_reprocess:
+                    self.progress_bar.stop()
+                    self.progress_bar.config(mode='determinate')
+                    self.progress_var.set(0)
+                    self.recording_status.config(text="Reprocess failed")
+                    self.status_var.set(f"Reprocess failed: {message}")
+                    messagebox.showerror("Reprocess Failed", message)
+                    self.is_reprocessing = False
+                    self._update_reprocess_button_state()
+                else:
+                    self._recording_error(message)
+
+            self.root.after(0, on_failure)
+
     def _apply_correction(self, transcript: str, screenshot: Image.Image) -> str:
         """Apply screenshot-based correction to transcript"""
         try:
@@ -1906,15 +2052,19 @@ class SpeechToTextGUI:
     
     def _transcription_complete(self, transcript: str):
         """Handle completed transcription"""
+        self.last_transcript_text = transcript
+
         # Update display
         self.transcription_display.delete(1.0, tk.END)
         self.transcription_display.insert(1.0, transcript)
-        
+
         # Update status
         self.recording_status.config(text="Transcription complete")
         self.status_var.set(f"Transcribed {len(transcript)} characters")
+        self.progress_bar.stop()
+        self.progress_bar.config(mode='determinate')
         self.progress_var.set(100)
-        
+
         # Copy to clipboard with retry logic
         clipboard_success = False
         for attempt in range(3):  # Try up to 3 times
@@ -1958,6 +2108,8 @@ class SpeechToTextGUI:
                     self.system_tray.icon.title = f"Transcription Complete ({len(transcript)} chars) - Click to view"
             except Exception:
                 pass
+
+        self._update_reprocess_button_state()
     
     def _recording_error(self, message: str):
         """Handle recording errors"""
@@ -1967,15 +2119,104 @@ class SpeechToTextGUI:
         self.status_var.set(f"Error: {message}")
         self.progress_var.set(0)
         self.progress_bar.stop()
-        
+        self.progress_bar.config(mode='determinate')
+
         # Hide recording indicator overlay
         self._hide_recording_indicator()
-        
+
         if self.recording_timer:
             self.root.after_cancel(self.recording_timer)
             self.recording_timer = None
-        
+
         messagebox.showerror("Recording Error", message)
+
+        if self.audio_engine:
+            self.audio_engine.recover_after_error()
+
+        self._update_reprocess_button_state()
+
+    def _get_available_last_recording_path(self) -> Optional[str]:
+        """Return the path to the most recent saved recording if it exists."""
+        for path in [self.last_recording_primary_path, self.last_recording_backup_path]:
+            if path and os.path.exists(path):
+                return path
+        return None
+
+    def _update_reprocess_button_state(self):
+        """Enable or disable the reprocess button based on saved recordings."""
+        if not self.reprocess_button:
+            return
+
+        has_recording = self._get_available_last_recording_path() is not None
+        if self.is_reprocessing or not has_recording:
+            self.reprocess_button.config(state=tk.DISABLED)
+        else:
+            self.reprocess_button.config(state=tk.NORMAL)
+
+    def _reprocess_last_recording(self):
+        """Re-run transcription/correction on the last saved recording."""
+        if self.is_recording:
+            messagebox.showinfo("Reprocess", "Stop the active recording before reprocessing.")
+            return
+
+        if self.is_reprocessing:
+            return
+
+        audio_path = self._get_available_last_recording_path()
+        if not audio_path:
+            messagebox.showwarning("Reprocess", "No saved recording available to reprocess.")
+            self._update_reprocess_button_state()
+            return
+
+        self.is_reprocessing = True
+        self.reprocess_button.config(state=tk.DISABLED)
+        self.status_var.set("Reprocessing last recording...")
+        self.recording_status.config(text="Reprocessing...")
+        self.progress_var.set(0)
+        self.progress_bar.config(mode='indeterminate')
+        self.progress_bar.start()
+
+        threading.Thread(target=self._reprocess_worker, args=(audio_path,), daemon=True).start()
+
+    def _handle_reprocess_exception(self, message: str):
+        """Handle unexpected errors during reprocessing."""
+        self.progress_bar.stop()
+        self.progress_bar.config(mode='determinate')
+        self.progress_var.set(0)
+        self.status_var.set(message)
+        self.recording_status.config(text="Reprocess failed")
+        messagebox.showerror("Reprocess Error", message)
+        self.is_reprocessing = False
+        self._update_reprocess_button_state()
+
+    def _prepare_progress_bar_for_reprocess(self):
+        """Switch the progress bar back to determinate mode for reprocessing."""
+        self.progress_bar.stop()
+        self.progress_bar.config(mode='determinate')
+
+    def _reprocess_worker(self, audio_path: str):
+        """Background worker to reprocess the last saved recording."""
+        try:
+            screenshot = self.last_screenshot_image
+            if self.config.use_correction and screenshot is None:
+                try:
+                    screenshot, screenshot_path = self.screenshot_engine.capture_screenshot()
+                    if screenshot_path:
+                        print(f"📸 Screenshot saved to: {screenshot_path}")
+                    if screenshot is not None:
+                        try:
+                            self.last_screenshot_image = screenshot.copy()
+                        except Exception:
+                            self.last_screenshot_image = screenshot
+                        self.last_screenshot_path = screenshot_path
+                except Exception as capture_error:
+                    print(f"Screenshot capture failed during reprocess: {capture_error}")
+                    screenshot = None
+
+            self._run_transcription_pipeline(audio_path, screenshot, triggered_by_reprocess=True)
+        except Exception as e:
+            error_message = f"Reprocess error: {e}"
+            self.root.after(0, lambda msg=error_message: self._handle_reprocess_exception(msg))
     
     def _start_recording_timer(self):
         """Start the recording duration timer"""
