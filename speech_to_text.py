@@ -9,6 +9,7 @@ import io
 import glob
 from pathlib import Path
 from datetime import datetime
+import shutil
 import ssl
 import numpy as np
 import pyaudio
@@ -69,14 +70,35 @@ else:
 groq_api_key = os.getenv("GROQ_API_KEY")
 groq_client = None
 use_groq_transcription = False
+groq_version_compatible = False
+
 if groq_api_key:
-    use_groq_transcription = True
     try:
         groq_client = Groq(api_key=groq_api_key)
-        print("Groq client initialized successfully as fallback.")
+        
+        # Check version compatibility
+        try:
+            import groq
+            version = getattr(groq, '__version__', 'unknown')
+            print(f"Groq library version detected: {version}")
+            
+            # Check if this version supports audio transcription
+            if hasattr(groq_client, 'audio') and hasattr(groq_client.audio, 'transcriptions'):
+                use_groq_transcription = True
+                groq_version_compatible = True
+                print("✅ Groq client initialized successfully with audio transcription support.")
+            else:
+                print(f"⚠️  Groq version {version} detected - audio transcription not supported.")
+                print("   Groq features will be disabled. App will use OpenAI only.")
+                print("   (Audio transcription requires Groq v0.20.0+)")
+                groq_client = None
+        except Exception as version_check_error:
+            print(f"Note: Could not verify Groq version compatibility: {version_check_error}")
+            groq_client = None
+            
     except Exception as e:
         print(f"Note: Failed to initialize GROQ client: {e}")
-        use_groq_transcription = False
+        groq_client = None
 else:
     print("Note: GROQ_API_KEY not found. Optional Groq fallback disabled.")
 
@@ -160,6 +182,127 @@ SCREENSHOT_FILENAME = "latest_screenshot.jpg"
 SCREENSHOT_PATH = os.path.join(screenshots_dir, SCREENSHOT_FILENAME)
 RECORDING_FILENAME = "latest_recording.wav"
 RECORDING_PATH = os.path.join(recordings_dir, RECORDING_FILENAME) # For backup
+
+# Create a function to generate timestamped recording filenames
+def get_timestamped_recording_path():
+    """Generate a unique timestamped filename for recordings."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return os.path.join(recordings_dir, f"recording_{timestamp}.wav")
+
+def get_fallback_documents_dir():
+    """Get the user's Documents folder as fallback location."""
+    try:
+        # Windows - use USERPROFILE\Documents
+        if os.name == 'nt':
+            documents_path = os.path.join(os.path.expanduser("~"), "Documents", "SpeechToText_Recordings")
+        else:
+            # Linux/Mac fallback
+            documents_path = os.path.join(os.path.expanduser("~"), "Documents", "SpeechToText_Recordings")
+        
+        os.makedirs(documents_path, exist_ok=True)
+        return documents_path
+    except Exception as e:
+        print(f"Error accessing Documents folder: {e}")
+        # Ultimate fallback to temp directory
+        return tempfile.gettempdir()
+
+def safe_save_audio_chunk(chunk_frames, primary_filename, backup_filename=None):
+    """
+    Safely saves audio frames to a WAV file with fallback mechanisms.
+    
+    Args:
+        chunk_frames: Audio frame data to save
+        primary_filename: Primary save location
+        backup_filename: Optional backup location (if not provided, creates timestamped version)
+        
+    Returns:
+        tuple: (success, saved_filename, backup_filename_used)
+    """
+    global audio
+    
+    def _save_to_file(filename, frames):
+        """Internal function to save frames to a specific file."""
+        try:
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(filename), exist_ok=True)
+            
+            with wave.open(filename, 'wb') as wf:
+                wf.setnchannels(CHANNELS)
+                wf.setsampwidth(audio.get_sample_size(FORMAT))
+                wf.setframerate(RATE)
+                wf.writeframes(b''.join(frames))
+            
+            # Verify file was created and has reasonable size
+            if os.path.exists(filename) and os.path.getsize(filename) > 100:
+                return True
+            return False
+        except Exception as e:
+            print(f"Failed to save to {filename}: {e}")
+            return False
+    
+    saved_files = []
+    
+    # Try primary location first
+    primary_success = False
+    try:
+        if _save_to_file(primary_filename, chunk_frames):
+            primary_success = True
+            saved_files.append(primary_filename)
+            print(f"✅ Primary save successful: {primary_filename}")
+        else:
+            print(f"❌ Primary save failed: {primary_filename}")
+    except Exception as e:
+        print(f"❌ Primary save error: {e}")
+    
+    # If primary failed, try Documents folder fallback
+    fallback_success = False
+    fallback_filename = None
+    if not primary_success:
+        try:
+            fallback_dir = get_fallback_documents_dir()
+            fallback_filename = os.path.join(fallback_dir, os.path.basename(primary_filename))
+            
+            if _save_to_file(fallback_filename, chunk_frames):
+                fallback_success = True
+                saved_files.append(fallback_filename)
+                print(f"✅ FALLBACK save successful: {fallback_filename}")
+                print(f"⚠️  Primary location failed - audio saved to Documents folder")
+            else:
+                print(f"❌ Fallback save failed: {fallback_filename}")
+        except Exception as e:
+            print(f"❌ Fallback save error: {e}")
+    
+    # Try to save backup copy (timestamped)
+    backup_success = False
+    final_backup_filename = backup_filename
+    if backup_filename is None:
+        # Generate timestamped backup filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if primary_success:
+            backup_dir = os.path.dirname(primary_filename)
+        else:
+            backup_dir = get_fallback_documents_dir()
+        final_backup_filename = os.path.join(backup_dir, f"recording_{timestamp}.wav")
+    
+    if final_backup_filename:
+        try:
+            if _save_to_file(final_backup_filename, chunk_frames):
+                backup_success = True
+                saved_files.append(final_backup_filename)
+                print(f"✅ Backup save successful: {final_backup_filename}")
+            else:
+                print(f"❌ Backup save failed: {final_backup_filename}")
+        except Exception as e:
+            print(f"❌ Backup save error: {e}")
+    
+    # Determine what to return
+    if primary_success:
+        return True, primary_filename, final_backup_filename if backup_success else None
+    elif fallback_success:
+        return True, fallback_filename, final_backup_filename if backup_success else None
+    else:
+        print("🚨 CRITICAL: All save attempts failed!")
+        return False, None, None
 
 # --- Cursor Management (Identical for both modes) ---
 OCR_NORMAL = 32512
@@ -455,7 +598,7 @@ def correct_transcription_with_vision_model(transcription, image):
 # --- Buffered Mode Functions (Record-then-Transcribe) ---
 
 def save_audio_chunk(chunk_frames, filename):
-    """Saves audio frames to a WAV file."""
+    """Saves audio frames to a WAV file (legacy function - use safe_save_audio_chunk for robust saving)."""
     global audio # Use global PyAudio instance
     try:
         with wave.open(filename, 'wb') as wf:
@@ -478,6 +621,14 @@ def transcribe_file(file_path):
             if DEBUG_MODE: print("Transcribing with Groq Whisper 3 Large...")
             try:
                 with open(file_path, "rb") as file:
+                    # Debug Groq client state
+                    if not groq_client:
+                        raise Exception("Groq client is None")
+                    if not hasattr(groq_client, 'audio'):
+                        raise Exception(f"Groq client missing 'audio' attribute. Available: {[attr for attr in dir(groq_client) if not attr.startswith('_')]}")
+                    if not hasattr(groq_client.audio, 'transcriptions'):
+                        raise Exception(f"Groq audio missing 'transcriptions' attribute. Available: {[attr for attr in dir(groq_client.audio) if not attr.startswith('_')]}")
+                    
                     transcription = groq_client.audio.transcriptions.create(
                         file=(os.path.basename(file_path), file.read()),
                         model="whisper-large-v3", 
@@ -549,6 +700,14 @@ def transcribe_file(file_path):
         if DEBUG_MODE: print("Using Groq as fallback transcription...")
         try:
             with open(file_path, "rb") as file:
+                # Debug Groq client state (fallback case)
+                if not groq_client:
+                    raise Exception("Groq client is None (fallback)")
+                if not hasattr(groq_client, 'audio'):
+                    raise Exception(f"Groq client missing 'audio' attribute (fallback). Available: {[attr for attr in dir(groq_client) if not attr.startswith('_')]}")
+                if not hasattr(groq_client.audio, 'transcriptions'):
+                    raise Exception(f"Groq audio missing 'transcriptions' attribute (fallback). Available: {[attr for attr in dir(groq_client.audio) if not attr.startswith('_')]}")
+                
                 transcription = groq_client.audio.transcriptions.create(
                     file=(os.path.basename(file_path), file.read()),
                     model="whisper-large-v3", response_format="text", language="en"
@@ -649,20 +808,40 @@ def process_audio_buffered():
     if DEBUG_MODE: 
         print(f"Processing {total_frames} audio frames (estimated {estimated_duration:.2f} seconds)")
     
-    # Clear global buffer for next recording - CRITICAL for preventing memory leaks
-    buffered_frames.clear()
-    buffered_frames = []  # Ensure it's a fresh list
+    # NOTE: Do NOT clear buffered_frames here! It causes race conditions.
+    # buffered_frames will be cleared in toggle_recording_buffered() after processing is complete.
 
-    # Save the full recording
-    full_audio_path = save_audio_chunk(frames_to_save, RECORDING_PATH)
-    if not full_audio_path:
-        print("Failed to save full audio recording.")
+    # PRIORITY #1: Save the audio recording FIRST - this is critical!
+    print("🔒 SAVING AUDIO RECORDING - TOP PRIORITY...")
+    
+    # Use robust saving with automatic fallback to Documents folder
+    timestamped_path = get_timestamped_recording_path()
+    success, saved_path, backup_path = safe_save_audio_chunk(frames_to_save, RECORDING_PATH, timestamped_path)
+    
+    if not success:
+        print("🚨 CRITICAL ERROR: Could not save audio recording anywhere!")
+        print("This should never happen. Check disk space and permissions.")
         return
-
-    print(f"Buffered audio saved to: {full_audio_path}")
-    file_size = os.path.getsize(full_audio_path)
+    
+    # Log what was saved
+    print(f"✅ PRIMARY: Audio saved to: {saved_path}")
+    if backup_path:
+        print(f"✅ BACKUP: Timestamped copy: {backup_path}")
+    
+    # Get file size for validation
+    file_size = os.path.getsize(saved_path)
     file_size_mb = file_size / (1024 * 1024)
-    print(f"Audio file size: {file_size_mb:.2f} MB")
+    print(f"📊 Audio file size: {file_size_mb:.2f} MB")
+    
+    # Use the successfully saved path for processing
+    full_audio_path = saved_path
+    
+    # Validate audio file has actual content
+    if file_size < 1000:  # Less than 1KB indicates a problem
+        print(f"⚠️  WARNING: Audio file suspiciously small ({file_size} bytes) - may indicate recording issue")
+        print("⚠️  Audio recording saved but may be corrupted. Processing will continue.")
+    else:
+        print(f"✅ Audio file size looks good: {file_size_mb:.2f} MB")
     
     transcription = ""
 
@@ -680,10 +859,18 @@ def process_audio_buffered():
         print(f"'{transcription[:100]}{'...' if len(transcription) > 100 else ''}")
         final_text = transcription
         
-        # Check if user selected a correction mode (1 or 2) or transcription-only mode (4 or 5)
-        if user_mode_selection in [1, 2] and user_wants_claude_correction:
-            print(f"Running screenshot-based correction with {'GPT-4.1' if user_mode_selection == 1 else 'gpt-4o-mini'}...")
-            final_text = correct_transcription_with_openai(transcription, buffered_screenshot)
+        # Check if user selected a correction mode
+        if user_wants_claude_correction and buffered_screenshot:
+            # Determine which correction method to use based on backend
+            if user_transcription_backend == 3:
+                print("Running screenshot-based correction with GPT-4.1 (for Groq backend)...")
+                final_text = correct_transcription_with_openai(transcription, buffered_screenshot)
+            elif user_mode_selection in [1, 2]:
+                print(f"Running screenshot-based correction with {'GPT-4.1' if user_mode_selection == 1 else 'gpt-4o-mini'}...")
+                final_text = correct_transcription_with_openai(transcription, buffered_screenshot)
+            else:
+                print("Using transcription only (no screenshot-based correction).")
+                final_text = transcription
         else:
             print("Using transcription only (no screenshot-based correction).")
             final_text = transcription
@@ -748,8 +935,8 @@ def toggle_recording_buffered():
         buffered_screenshot_path = None
         buffered_recording_start_time = time.time()  # Track start time
 
-        # Capture screenshot ONLY if in modes 1-2 that use correction
-        if user_mode_selection in [1, 2] and user_wants_claude_correction:
+        # Capture screenshot if any correction mode is enabled
+        if user_wants_claude_correction:
              print("📸 Capturing screenshot for correction...")
              buffered_screenshot, buffered_screenshot_path = capture_screenshot()
         else:
@@ -852,12 +1039,14 @@ def toggle_recording_buffered():
             print("Processing audio...")
             process_audio_buffered()
         
-        # Reset all global state variables for next recording
+        # Reset all global state variables for next recording - AFTER processing is complete
         buffered_recording_start_time = None
-        # Ensure cleanup of any remaining state
-        if not buffered_frames:  # Only clear if not already processed
-            buffered_screenshot = None
-            buffered_screenshot_path = None
+        # Clear buffered_frames AFTER processing to prevent race conditions
+        buffered_frames.clear()
+        buffered_frames = []
+        buffered_screenshot = None
+        buffered_screenshot_path = None
+        if DEBUG_MODE: print("All buffered recording state cleared for next recording.")
 
 
 # --- NEW: Live Transcription Display Functions ---
@@ -1973,14 +2162,24 @@ if __name__ == "__main__":
             user_transcription_backend = 2
             print("--> Using Whisper-1 for maximum stability.")
             break
-        elif backend_input == "3" and use_groq_transcription:
-            user_transcription_backend = 3
-            print("--> Using Groq Whisper 3 Large with correction.")
-            break
-        elif backend_input == "4" and use_groq_transcription:
-            user_transcription_backend = 4
-            print("--> Using Groq Whisper 3 Large without correction.")
-            break
+        elif backend_input == "3":
+            if use_groq_transcription:
+                user_transcription_backend = 3
+                print("--> Using Groq Whisper 3 Large with correction.")
+                break
+            else:
+                print("❌ Groq Whisper 3 Large not available (incompatible version or missing API key).")
+                print("   Please select option 1 or 2 instead.")
+                continue
+        elif backend_input == "4":
+            if use_groq_transcription:
+                user_transcription_backend = 4
+                print("--> Using Groq Whisper 3 Large without correction.")
+                break
+            else:
+                print("❌ Groq Whisper 3 Large not available (incompatible version or missing API key).")
+                print("   Please select option 1 or 2 instead.")
+                continue
         else:
             if use_groq_transcription:
                 print("Invalid input. Please enter 1, 2, 3, 4, or S (or press Enter for default).")

@@ -74,6 +74,9 @@ if not exist "data\.env" (
     echo.
 )
 
+echo Updating Groq to latest version...
+pip install groq>=0.20.0 --upgrade --quiet >nul 2>&1
+
 echo Starting Professional Speech-to-Text GUI...
 echo.
 
