@@ -269,24 +269,37 @@ class AudioEngine:
 
     def stop_recording(self) -> Tuple[bool, float]:
         """Stop audio recording and return success status and duration"""
-        if not self.recording_active:
-            return False, 0.0
-
+        # Capture state before modifying
+        was_active = self.recording_active
         self.recording_active = False
-        duration = time.time() - self.recording_start_time if self.recording_start_time else 0
+        
+        duration = 0.0
+        if self.recording_start_time:
+            duration = time.time() - self.recording_start_time
 
-        # Stop and close stream
+        # Stop and close stream - ALWAYS do this to ensure cleanup, 
+        # regardless of whether recording_active was True or False.
         if self.recording_stream:
             try:
-                self.recording_stream.stop_stream()
-                self.recording_stream.close()
+                if hasattr(self.recording_stream, 'is_active') and self.recording_stream.is_active():
+                    self.recording_stream.stop_stream()
+                if hasattr(self.recording_stream, 'close'):
+                    self.recording_stream.close()
             except Exception as e:
                 print(f"Error stopping recording stream: {e}")
-                self._attempt_recovery_from_error(e, context="stop_recording")
+                # We don't trigger full recovery here as we are stopping anyway,
+                # but we log it. The stream variable will be cleared below.
             finally:
                 self.recording_stream = None
 
-        return True, duration
+        # Return success if we have recorded data, even if the loop stopped itself (timeout)
+        has_data = len(self.recorded_frames) > 0
+        
+        # Only return failure if we have no data AND we weren't active
+        if not has_data and not was_active:
+            return False, 0.0
+            
+        return has_data, duration
 
     def _recording_loop(self):
         """Recording loop running in separate thread"""
