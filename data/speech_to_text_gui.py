@@ -23,6 +23,11 @@ import atexit
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
+import traceback
+
+# Get absolute path to script directory at startup (before any os.chdir)
+# This ensures paths work even if working directory changes (e.g., Google Drive sync issues after sleep)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # GUI Imports
 import tkinter as tk
@@ -680,9 +685,10 @@ class ScreenshotEngine:
                 screenshot_mss = sct.grab(target_monitor)
                 img = Image.frombytes("RGB", screenshot_mss.size, screenshot_mss.bgra, "raw", "BGRX")
                 
-                # Save to data folder
-                os.makedirs("data/screenshots", exist_ok=True)
-                temp_path = os.path.join("data/screenshots", "latest_screenshot.jpg")
+                # Save to script folder (using absolute path for reliability)
+                screenshots_dir = os.path.join(SCRIPT_DIR, "screenshots")
+                os.makedirs(screenshots_dir, exist_ok=True)
+                temp_path = os.path.join(screenshots_dir, "latest_screenshot.jpg")
                 img.save(temp_path)
                 
                 return img, temp_path
@@ -1926,19 +1932,28 @@ class SpeechToTextGUI:
             # PRIORITY #1: Save the audio recording FIRST - this is critical!
             print("🔒 SAVING AUDIO RECORDING - TOP PRIORITY...")
             
-            # Set up file paths
-            os.makedirs("data/recordings", exist_ok=True)
-            temp_file = os.path.join("data/recordings", "latest_recording.wav")
+            # Set up file paths using ABSOLUTE paths (not relative)
+            # This fixes WinError 433 when working directory becomes unavailable (e.g., Google Drive after sleep)
+            try:
+                recordings_dir = os.path.join(SCRIPT_DIR, "recordings")
+                os.makedirs(recordings_dir, exist_ok=True)
+                print(f"📁 Using primary recordings directory: {recordings_dir}")
+            except OSError as path_error:
+                # Primary path failed (e.g., Google Drive unavailable) - fall back to Documents folder
+                print(f"⚠️  Primary recordings directory unavailable: {path_error}")
+                recordings_dir = self.audio_engine.get_fallback_documents_dir()
+                print(f"📁 Falling back to: {recordings_dir}")
+            
+            temp_file = os.path.join(recordings_dir, "latest_recording.wav")
             
             # Use robust saving with automatic fallback to Documents folder
-            from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_file = os.path.join("data/recordings", f"recording_{timestamp}.wav")
+            backup_file = os.path.join(recordings_dir, f"recording_{timestamp}.wav")
             
             success, saved_path, backup_path = self.audio_engine.safe_save_recording(temp_file, backup_file)
             
             if not success:
-                self._recording_error("🚨 CRITICAL ERROR: Could not save audio recording anywhere!")
+                self.root.after(0, lambda: self._recording_error("🚨 CRITICAL ERROR: Could not save audio recording anywhere!"))
                 return
             
             # Log what was saved
@@ -1999,8 +2014,14 @@ class SpeechToTextGUI:
             self._run_transcription_pipeline(saved_path, screenshot, triggered_by_reprocess=False)
 
         except Exception as e:
+            # Catch ALL exceptions and display them properly without crashing
             error_msg = f"Processing error: {e}"
+            print(f"❌ {error_msg}")
+            traceback.print_exc()
+            # Use lambda with default argument to avoid closure issues
             self.root.after(0, lambda msg=error_msg: self._recording_error(msg))
+
+
 
     def _run_transcription_pipeline(self, audio_path: str, screenshot: Optional[Image.Image], triggered_by_reprocess: bool = False):
         """Run transcription (and optional correction) for the provided audio file."""
