@@ -29,6 +29,20 @@ import traceback
 # This ensures paths work even if working directory changes (e.g., Google Drive sync issues after sleep)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Global thread exception handler to catch crashes in background threads
+def thread_exception_handler(args):
+    """Handle uncaught exceptions in threads - ensures they are logged before app exits"""
+    print(f"\n❌❌❌ CRITICAL: Thread '{args.thread.name}' crashed! ❌❌❌")
+    print(f"Exception type: {args.exc_type.__name__}")
+    print(f"Exception value: {args.exc_value}")
+    print("Full traceback:")
+    traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback)
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+# Install the global thread exception handler
+threading.excepthook = thread_exception_handler
+
 # GUI Imports
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, scrolledtext
@@ -37,7 +51,7 @@ from tkinter import Menu
 
 # Core functionality imports
 import numpy as np
-import pyaudio
+import sounddevice as sd  # More reliable than PyAudio
 import pyperclip
 import soundfile as sf
 import keyboard
@@ -84,7 +98,7 @@ class AppConfig:
     rate: int = 24000
     channels: int = 1
     chunk_ms: int = 20
-    format: int = pyaudio.paInt16
+    format: str = "int16"  # Audio format (sounddevice uses string format)
     
     # Recording settings
     hotkey: str = "ctrl+q"
@@ -134,147 +148,148 @@ class AppConfig:
 
 
 class AudioEngine:
-    """Handles all audio recording and processing functionality"""
+    """Handles all audio recording using sounddevice (more reliable than PyAudio)"""
 
     def __init__(self, config: AppConfig):
         self.config = config
-        self.audio = None
-        self.recording_stream = None
         self.recording_active = False
-        self.recorded_frames = []
+        self.recorded_data = []  # List of numpy arrays
         self.recording_start_time = None
         self.last_error_message = ""
-
-        # Initialize PyAudio
-        if not self._reinitialize_audio(log_message="PyAudio initialized successfully"):
-            raise RuntimeError("Failed to initialize PyAudio. Check audio devices.")
-
-    def _reinitialize_audio(self, log_message: str = "PyAudio reinitialized successfully") -> bool:
-        """Tear down the current PyAudio instance and create a new one."""
-        # Close any existing stream references before tearing down
-        if self.recording_stream:
-            try:
-                if hasattr(self.recording_stream, 'is_active') and self.recording_stream.is_active():
-                    self.recording_stream.stop_stream()
-                if hasattr(self.recording_stream, 'close'):
-                    self.recording_stream.close()
-            except Exception as stream_error:
-                print(f"Error closing existing stream during reinit: {stream_error}")
-            finally:
-                self.recording_stream = None
-
-        if self.audio:
-            try:
-                self.audio.terminate()
-            except Exception as term_error:
-                print(f"Error terminating PyAudio during reinit: {term_error}")
-
+        self._lock = threading.Lock()
+        
+        # Test audio system
         try:
-            self.audio = pyaudio.PyAudio()
-            self.last_error_message = ""
-            print(log_message)
-            return True
+            devices = sd.query_devices()
+            default_input = sd.query_devices(kind='input')
+            print(f"✅ Audio system initialized. Default input: {default_input['name']}")
         except Exception as e:
-            self.audio = None
+            print(f"⚠️ Audio system warning: {e}")
             self.last_error_message = str(e)
-            print(f"Failed to (re)initialize PyAudio: {e}")
-            return False
-
-    def ensure_audio_ready(self) -> bool:
-        """Ensure an active PyAudio instance exists before starting a stream."""
-        if self.audio is None:
-            return self._reinitialize_audio()
-        return True
-
-    def _should_reset_audio(self, error: Exception) -> bool:
-        """Determine if an audio error should trigger a PyAudio reset."""
-        if isinstance(error, (OSError, IOError)):
-            return True
-
-        message = str(error).lower()
-        keywords = [
-            "device",
-            "pa",
-            "invalid",
-            "overflow",
-            "underflow",
-            "bad file descriptor",
-        ]
-        return any(keyword in message for keyword in keywords)
-
-    def _attempt_recovery_from_error(self, error: Exception, context: str = ""):
-        """Attempt to recover from an audio failure by reinitializing PyAudio."""
-        self.last_error_message = str(error)
-        if self._should_reset_audio(error):
-            print(f"Attempting PyAudio recovery after error{f' in {context}' if context else ''}: {error}")
-            success = self._reinitialize_audio(log_message="PyAudio recovered after device error")
-            if not success:
-                print("PyAudio recovery failed. Audio recording may remain unavailable until devices are restored.")
 
     def get_sample_width(self) -> int:
-        """Return the sample width for the configured audio format."""
-        if not self.ensure_audio_ready():
-            raise RuntimeError("PyAudio is not available")
-        return self.audio.get_sample_size(self.config.format)
+        """Return the sample width for 16-bit audio (2 bytes)."""
+        return 2  # 16-bit = 2 bytes
 
     def get_audio_devices(self) -> List[Dict]:
         """Get list of available audio input devices"""
         devices = []
-        if not self.ensure_audio_ready():
-            return devices
-
         try:
-            for i in range(self.audio.get_device_count()):
-                device_info = self.audio.get_device_info_by_index(i)
-                if device_info['maxInputChannels'] > 0:
+            all_devices = sd.query_devices()
+            for i, device in enumerate(all_devices):
+                if device['max_input_channels'] > 0:
                     devices.append({
                         'index': i,
-                        'name': device_info['name'],
-                        'channels': device_info['maxInputChannels'],
-                        'sample_rate': device_info['defaultSampleRate']
+                        'name': device['name'],
+                        'channels': device['max_input_channels'],
+                        'sample_rate': device['default_samplerate']
                     })
         except Exception as e:
             print(f"Error getting audio devices: {e}")
-        
         return devices
-    
-    def start_recording(self, device_index: Optional[int] = None) -> bool:
-        """Start audio recording"""
-        if self.recording_active:
-            return False
 
-        if not self.ensure_audio_ready():
+    def start_recording(self, device_index: Optional[int] = None) -> bool:
+        """Start audio recording using sounddevice"""
+        print("🎙️ Attempting to start recording...")
+        sys.stdout.flush()
+        
+        if self.recording_active:
+            print("⚠️ Recording already active, skipping start")
             return False
 
         try:
-            chunk_samples = int(self.config.rate * (self.config.chunk_ms / 1000))
-
-            self.recording_stream = self.audio.open(
-                format=self.config.format,
-                channels=self.config.channels,
-                rate=self.config.rate,
-                input=True,
-                input_device_index=device_index,
-                frames_per_buffer=chunk_samples
-            )
+            # Clear previous recording data
+            with self._lock:
+                self.recorded_data = []
             
-            self.recording_active = True
-            self.recorded_frames.clear()  # Clear any previous frames before starting new recording
-            self.recorded_frames = []      # Ensure fresh list
             self.recording_start_time = time.time()
+            self.recording_active = True
+            
+            print(f"🎙️ Starting audio stream: rate={self.config.rate}, channels={self.config.channels}, device={device_index}")
+            sys.stdout.flush()
 
-            # Start recording thread
-            threading.Thread(target=self._recording_loop, daemon=True).start()
+            # Start recording in a background thread using sounddevice's InputStream
+            def audio_callback(indata, frames, time_info, status):
+                """Callback function called by sounddevice for each audio block"""
+                if status:
+                    print(f"⚠️ Audio status: {status}")
+                    sys.stdout.flush()
+                
+                if self.recording_active:
+                    # Make a copy of the data
+                    with self._lock:
+                        self.recorded_data.append(indata.copy())
+
+            # Create and start the input stream
+            self.stream = sd.InputStream(
+                samplerate=self.config.rate,
+                channels=self.config.channels,
+                dtype='int16',  # 16-bit audio
+                device=device_index,
+                callback=audio_callback,
+                blocksize=int(self.config.rate * self.config.chunk_ms / 1000)
+            )
+            self.stream.start()
+            
+            print("✅ Audio stream started successfully")
+            sys.stdout.flush()
+
+            # Start a monitoring thread for duration limit and status
+            threading.Thread(target=self._monitor_recording, daemon=True).start()
+            
             return True
 
         except Exception as e:
-            print(f"Error starting recording: {e}")
-            self._attempt_recovery_from_error(e, context="start_recording")
+            print(f"❌ Error starting recording: {e}")
+            traceback.print_exc()
+            sys.stdout.flush()
+            self.last_error_message = str(e)
+            self.recording_active = False
             return False
+
+    def _monitor_recording(self):
+        """Monitor recording duration and provide status updates"""
+        last_status_time = time.time()
+        status_interval = 5.0
+        
+        while self.recording_active:
+            try:
+                current_time = time.time()
+                duration = current_time - self.recording_start_time if self.recording_start_time else 0
+                
+                # Check max duration
+                if duration > self.config.max_recording_duration:
+                    print(f"⏰ Recording stopped: max duration ({self.config.max_recording_duration}s) reached")
+                    sys.stdout.flush()
+                    self.recording_active = False
+                    break
+                
+                # Periodic status update
+                if current_time - last_status_time >= status_interval:
+                    with self._lock:
+                        chunk_count = len(self.recorded_data)
+                    print(f"🎙️ Recording status: {chunk_count} chunks captured ({duration:.1f}s)")
+                    sys.stdout.flush()
+                    last_status_time = current_time
+                
+                time.sleep(0.1)  # Small sleep to avoid busy-waiting
+                
+            except Exception as e:
+                print(f"❌ Error in recording monitor: {e}")
+                traceback.print_exc()
+                sys.stdout.flush()
+                break
+        
+        # Final status
+        with self._lock:
+            final_chunk_count = len(self.recorded_data)
+        print(f"🎙️ Recording monitor ended. Total chunks captured: {final_chunk_count}")
+        if final_chunk_count == 0:
+            print("❌ WARNING: No audio was captured! Check your microphone.")
+        sys.stdout.flush()
 
     def stop_recording(self) -> Tuple[bool, float]:
         """Stop audio recording and return success status and duration"""
-        # Capture state before modifying
         was_active = self.recording_active
         self.recording_active = False
         
@@ -282,137 +297,100 @@ class AudioEngine:
         if self.recording_start_time:
             duration = time.time() - self.recording_start_time
 
-        # Stop and close stream - ALWAYS do this to ensure cleanup, 
-        # regardless of whether recording_active was True or False.
-        if self.recording_stream:
+        # Stop the stream
+        if hasattr(self, 'stream') and self.stream:
             try:
-                if hasattr(self.recording_stream, 'is_active') and self.recording_stream.is_active():
-                    self.recording_stream.stop_stream()
-                if hasattr(self.recording_stream, 'close'):
-                    self.recording_stream.close()
+                self.stream.stop()
+                self.stream.close()
             except Exception as e:
-                print(f"Error stopping recording stream: {e}")
-                # We don't trigger full recovery here as we are stopping anyway,
-                # but we log it. The stream variable will be cleared below.
+                print(f"Error stopping audio stream: {e}")
             finally:
-                self.recording_stream = None
-
-        # Return success if we have recorded data, even if the loop stopped itself (timeout)
-        has_data = len(self.recorded_frames) > 0
+                self.stream = None
         
-        # Only return failure if we have no data AND we weren't active
+        # Check if we have data
+        with self._lock:
+            has_data = len(self.recorded_data) > 0
+        
         if not has_data and not was_active:
             return False, 0.0
             
         return has_data, duration
 
-    def _recording_loop(self):
-        """Recording loop running in separate thread"""
-        chunk_samples = int(self.config.rate * (self.config.chunk_ms / 1000))
-        max_frames = 15000  # Prevent unlimited memory growth (about 5 minutes at 24kHz)
-        
-        while self.recording_active and self.recording_stream:
-            try:
-                # Check for memory limit to prevent crashes
-                if len(self.recorded_frames) >= max_frames:
-                    print(f"Warning: Recording reached maximum frame limit ({max_frames}), stopping to prevent memory issues")
-                    self.recording_active = False
-                    break
-                
-                # Check if stream is still valid before reading
-                if not hasattr(self.recording_stream, 'read'):
-                    print("Warning: Recording stream invalid, stopping")
-                    self.recording_active = False
-                    break
-                
-                data = self.recording_stream.read(chunk_samples, exception_on_overflow=False)
-                self.recorded_frames.append(data)
-                
-                # Check recording duration
-                if self.recording_start_time:
-                    duration = time.time() - self.recording_start_time
-                    if duration > self.config.max_recording_duration:
-                        self.recording_active = False
-                        break
-
-            except Exception as e:
-                print(f"Error in recording loop: {e}")
-                self._attempt_recovery_from_error(e, context="recording_loop")
-                self.recording_active = False
-                break
+    @property
+    def recorded_frames(self):
+        """Legacy property - returns recorded data as bytes for compatibility"""
+        with self._lock:
+            if not self.recorded_data:
+                return []
+            # Convert numpy arrays to bytes
+            return [chunk.tobytes() for chunk in self.recorded_data]
 
     def get_fallback_documents_dir(self):
         """Get the user's Documents folder as fallback location."""
         try:
-            # Windows - use USERPROFILE\Documents
             if os.name == 'nt':
                 documents_path = os.path.join(os.path.expanduser("~"), "Documents", "SpeechToText_Recordings")
             else:
-                # Linux/Mac fallback
                 documents_path = os.path.join(os.path.expanduser("~"), "Documents", "SpeechToText_Recordings")
             
             os.makedirs(documents_path, exist_ok=True)
             return documents_path
         except Exception as e:
             print(f"Error accessing Documents folder: {e}")
-            # Ultimate fallback to temp directory
             import tempfile
             return tempfile.gettempdir()
 
     def save_recording(self, filename: str) -> bool:
-        """Save recorded audio to file (legacy method - use safe_save_recording for robust saving)"""
-        if not self.recorded_frames:
-            return False
+        """Save recorded audio to file using soundfile (more reliable than wave)"""
+        with self._lock:
+            if not self.recorded_data:
+                return False
             
-        try:
-            with wave.open(filename, 'wb') as wf:
-                wf.setnchannels(self.config.channels)
-                wf.setsampwidth(self.get_sample_width())
-                wf.setframerate(self.config.rate)
-                wf.writeframes(b''.join(self.recorded_frames))
-            return True
-        except Exception as e:
-            print(f"Error saving recording: {e}")
-            return False
+            try:
+                # Concatenate all recorded chunks
+                audio_data = np.concatenate(self.recorded_data, axis=0)
+                
+                # Save using soundfile
+                sf.write(filename, audio_data, self.config.rate)
+                return True
+            except Exception as e:
+                print(f"Error saving recording: {e}")
+                traceback.print_exc()
+                return False
 
     def safe_save_recording(self, primary_filename: str, backup_filename: str = None) -> tuple:
         """
         Safely saves recorded audio with fallback mechanisms.
-        
-        Args:
-            primary_filename: Primary save location
-            backup_filename: Optional backup location (if not provided, creates timestamped version)
-            
-        Returns:
-            tuple: (success, saved_filename, backup_filename_used)
         """
-        if not self.recorded_frames:
-            return False, None, None
-        
-        def _save_to_file(filename):
-            """Internal function to save frames to a specific file."""
+        with self._lock:
+            if not self.recorded_data:
+                return False, None, None
+            
             try:
-                # Ensure directory exists
+                # Concatenate all recorded chunks
+                audio_data = np.concatenate(self.recorded_data, axis=0)
+            except Exception as e:
+                print(f"❌ Failed to concatenate audio data: {e}")
+                return False, None, None
+        
+        def _save_to_file(filename, data):
+            """Internal function to save numpy array to WAV file."""
+            try:
                 os.makedirs(os.path.dirname(filename), exist_ok=True)
-
-                with wave.open(filename, 'wb') as wf:
-                    wf.setnchannels(self.config.channels)
-                    wf.setsampwidth(self.get_sample_width())
-                    wf.setframerate(self.config.rate)
-                    wf.writeframes(b''.join(self.recorded_frames))
-
-                # Verify file was created and has reasonable size
+                sf.write(filename, data, self.config.rate)
+                
                 if os.path.exists(filename) and os.path.getsize(filename) > 100:
                     return True
                 return False
             except Exception as e:
                 print(f"Failed to save to {filename}: {e}")
+                traceback.print_exc()
                 return False
         
         # Try primary location first
         primary_success = False
         try:
-            if _save_to_file(primary_filename):
+            if _save_to_file(primary_filename, audio_data):
                 primary_success = True
                 print(f"✅ Primary save successful: {primary_filename}")
             else:
@@ -428,7 +406,7 @@ class AudioEngine:
                 fallback_dir = self.get_fallback_documents_dir()
                 fallback_filename = os.path.join(fallback_dir, os.path.basename(primary_filename))
                 
-                if _save_to_file(fallback_filename):
+                if _save_to_file(fallback_filename, audio_data):
                     fallback_success = True
                     print(f"✅ FALLBACK save successful: {fallback_filename}")
                     print(f"⚠️  Primary location failed - audio saved to Documents folder")
@@ -441,8 +419,6 @@ class AudioEngine:
         backup_success = False
         final_backup_filename = backup_filename
         if backup_filename is None:
-            # Generate timestamped backup filename
-            from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             if primary_success:
                 backup_dir = os.path.dirname(primary_filename)
@@ -452,7 +428,7 @@ class AudioEngine:
         
         if final_backup_filename:
             try:
-                if _save_to_file(final_backup_filename):
+                if _save_to_file(final_backup_filename, audio_data):
                     backup_success = True
                     print(f"✅ Backup save successful: {final_backup_filename}")
                 else:
@@ -471,37 +447,35 @@ class AudioEngine:
     
     def cleanup(self):
         """Clean up audio resources"""
-        # Stop recording if active
-        if self.recording_active:
-            self.recording_active = False
-            time.sleep(0.1)  # Brief wait for recording loop to exit
+        self.recording_active = False
+        time.sleep(0.1)
         
-        # Clear recorded frames to free memory
-        self.recorded_frames.clear()
-        self.recorded_frames = []
+        with self._lock:
+            self.recorded_data = []
         
-        if self.recording_stream:
+        if hasattr(self, 'stream') and self.stream:
             try:
-                if hasattr(self.recording_stream, 'is_active') and self.recording_stream.is_active():
-                    self.recording_stream.stop_stream()
-                if hasattr(self.recording_stream, 'close'):
-                    self.recording_stream.close()
+                self.stream.stop()
+                self.stream.close()
             except Exception as e:
-                print(f"Error cleaning up recording stream: {e}")
+                print(f"Error cleaning up audio stream: {e}")
             finally:
-                self.recording_stream = None
-                
-        if self.audio:
-            try:
-                self.audio.terminate()
-            except Exception as e:
-                print(f"Error terminating PyAudio: {e}")
-            finally:
-                self.audio = None
+                self.stream = None
 
     def recover_after_error(self) -> bool:
-        """Public helper to ensure PyAudio is ready after an error from higher layers."""
-        return self.ensure_audio_ready()
+        """Reset the audio engine after an error."""
+        self.cleanup()
+        self.last_error_message = ""
+        return True
+
+    def ensure_audio_ready(self) -> bool:
+        """Check if audio system is ready."""
+        try:
+            sd.query_devices()
+            return True
+        except Exception as e:
+            self.last_error_message = str(e)
+            return False
 
 
 class TranscriptionEngine:
@@ -622,13 +596,14 @@ class TranscriptionEngine:
             
         except Exception as e:
             return False, f"OpenAI transcription failed: {e}"
-    
     def _transcribe_groq(self, file_path: str, progress_callback=None) -> Tuple[bool, str]:
         """Transcribe using Groq"""
         try:
+            print("🔍 DEBUG: Starting Groq transcription...")
             if progress_callback:
                 progress_callback("Transcribing with Groq...", 50)
-                
+            
+            print(f"🔍 DEBUG: Opening audio file: {file_path}")
             with open(file_path, "rb") as file:
                 # Debug Groq client state
                 if not self.groq_client:
@@ -638,25 +613,36 @@ class TranscriptionEngine:
                 if not hasattr(self.groq_client.audio, 'transcriptions'):
                     raise Exception(f"Groq audio missing 'transcriptions' attribute. Available: {[attr for attr in dir(self.groq_client.audio) if not attr.startswith('_')]}")
                 
+                print("🔍 DEBUG: Reading file content...")
+                file_content = file.read()
+                print(f"🔍 DEBUG: File content size: {len(file_content)} bytes")
+                
+                print("🔍 DEBUG: Calling Groq API...")
                 transcription = self.groq_client.audio.transcriptions.create(
-                    file=(os.path.basename(file_path), file.read()),
+                    file=(os.path.basename(file_path), file_content),
                     model="whisper-large-v3",
                     response_format="text",
                     language="en"
                 )
+                print("🔍 DEBUG: Groq API call completed successfully")
             
             if progress_callback:
                 progress_callback("Transcription completed", 100)
                 
             # Handle different response formats
             if isinstance(transcription, str):
+                print(f"🔍 DEBUG: Got string response, length: {len(transcription)}")
                 return True, transcription
             elif hasattr(transcription, 'text'):
+                print(f"🔍 DEBUG: Got object response, text length: {len(transcription.text)}")
                 return True, transcription.text
             else:
+                print(f"🔍 DEBUG: Got unknown response type: {type(transcription)}")
                 return True, str(transcription)
                 
         except Exception as e:
+            print(f"❌ DEBUG: Groq transcription error: {e}")
+            traceback.print_exc()
             return False, f"Groq transcription failed: {e}"
 
 
@@ -1973,16 +1959,21 @@ class SpeechToTextGUI:
             else:
                 print(f"✅ Audio file size looks good: {file_size_mb:.2f} MB")
 
+            print("🔍 DEBUG: Step 1 - Persisting recording details...")
+            sys.stdout.flush()  # Ensure output is visible before potential crash
             # Persist details for recovery/reprocessing
             self.last_recording_primary_path = saved_path
             self.last_recording_backup_path = backup_path
             self.last_recording_timestamp = datetime.now()
+            print("🔍 DEBUG: Step 2 - Scheduling reprocess button update...")
+            sys.stdout.flush()
             self.root.after(0, self._update_reprocess_button_state)
 
             # NOTE: Do NOT clear recorded_frames here during processing!
             # This causes race conditions with the recording thread.
             # Frames will be cleared when the next recording starts or in cleanup.
 
+            print("🔍 DEBUG: Step 3 - Updating progress bar...")
             # Update progress
             self.root.after(0, lambda: self.progress_var.set(25))
 
@@ -2010,8 +2001,20 @@ class SpeechToTextGUI:
                 self.last_screenshot_image = None
             self.last_screenshot_path = screenshot_path
 
+            print("🔍 DEBUG: Step 5 - Starting transcription pipeline...")
+            print(f"🔍 DEBUG: Audio path: {saved_path}")
+            print(f"🔍 DEBUG: Screenshot available: {screenshot is not None}")
+            print(f"🔍 DEBUG: Backend setting: {self.config.backend}")
+            
             # Run the transcription/correction pipeline on the saved audio
-            self._run_transcription_pipeline(saved_path, screenshot, triggered_by_reprocess=False)
+            # Wrap in additional try/except to catch any segfaults or C-level crashes
+            try:
+                self._run_transcription_pipeline(saved_path, screenshot, triggered_by_reprocess=False)
+                print("🔍 DEBUG: Step 6 - Transcription pipeline returned successfully")
+            except Exception as pipeline_error:
+                print(f"❌ DEBUG: Pipeline crashed with: {pipeline_error}")
+                traceback.print_exc()
+                raise  # Re-raise to be caught by outer handler
 
         except Exception as e:
             # Catch ALL exceptions and display them properly without crashing
@@ -2025,6 +2028,7 @@ class SpeechToTextGUI:
 
     def _run_transcription_pipeline(self, audio_path: str, screenshot: Optional[Image.Image], triggered_by_reprocess: bool = False):
         """Run transcription (and optional correction) for the provided audio file."""
+        print("🔍 DEBUG: Entered _run_transcription_pipeline")
 
         def progress_callback(message, progress):
             self.root.after(0, lambda: self.status_var.set(message))
@@ -2033,18 +2037,30 @@ class SpeechToTextGUI:
         if triggered_by_reprocess:
             self.root.after(0, self._prepare_progress_bar_for_reprocess)
 
+        print("🔍 DEBUG: About to call transcribe_file...")
         try:
             success, transcript = self.transcription_engine.transcribe_file(audio_path, progress_callback)
+            print(f"🔍 DEBUG: transcribe_file returned. Success={success}, Length={len(transcript) if transcript else 0}")
         except Exception as e:
+            print(f"❌ DEBUG: transcribe_file crashed: {e}")
+            traceback.print_exc()
             success = False
             transcript = f"Transcription error: {e}"
 
         if success:
+            print("🔍 DEBUG: Transcription successful, processing result...")
             final_transcript = transcript
             if self.config.use_correction and screenshot:
+                print("🔍 DEBUG: Applying correction with screenshot...")
                 self.root.after(0, lambda: self.status_var.set("Applying context correction..."))
                 self.root.after(0, lambda: self.progress_var.set(85))
-                final_transcript = self._apply_correction(transcript, screenshot)
+                try:
+                    final_transcript = self._apply_correction(transcript, screenshot)
+                    print(f"🔍 DEBUG: Correction applied, final length: {len(final_transcript)}")
+                except Exception as corr_err:
+                    print(f"❌ DEBUG: Correction crashed: {corr_err}")
+                    traceback.print_exc()
+                    final_transcript = transcript  # Use original on failure
 
             def on_success(result_text=final_transcript):
                 self._transcription_complete(result_text)
@@ -2124,12 +2140,11 @@ class SpeechToTextGUI:
         # Hide recording indicator overlay
         self._hide_recording_indicator()
         
-        # Clear recorded frames now that processing is complete (safe to do here)
-        if self.audio_engine and hasattr(self.audio_engine, 'recorded_frames'):
-            self.audio_engine.recorded_frames.clear()
-            self.audio_engine.recorded_frames = []
+        # Clear recorded data now that processing is complete
+        if self.audio_engine and hasattr(self.audio_engine, 'recorded_data'):
+            with self.audio_engine._lock:
+                self.audio_engine.recorded_data = []
             if hasattr(self, 'status_var'):
-                # Only update status if we're not already updating it elsewhere
                 self.root.after(3000, lambda: self.status_var.set("Ready for next recording"))
         
         # Don't automatically restore window - let user manually restore when needed

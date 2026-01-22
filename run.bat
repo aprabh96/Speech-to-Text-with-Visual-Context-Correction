@@ -41,7 +41,7 @@ if %errorlevel% neq 0 (
     pip install openai>=1.0.0 groq>=0.4.0 anthropic>=0.7.0
     
     echo Installing audio dependencies...
-    pip install pyaudio>=0.2.11 soundfile>=0.12.0
+    pip install sounddevice>=0.4.6 soundfile>=0.12.0
     
     echo Installing system integration dependencies...
     pip install keyboard>=0.13.5 pyperclip>=1.8.0 python-dotenv>=0.19.0
@@ -73,6 +73,9 @@ if not exist "data\.env" (
     echo or configure them in the application settings.
     echo.
 )
+
+echo Ensuring reliable audio library (sounddevice) is installed...
+pip install sounddevice>=0.4.6 --upgrade --quiet >nul 2>&1
 
 echo Updating Groq to latest version...
 pip install groq>=0.20.0 --upgrade --quiet >nul 2>&1
