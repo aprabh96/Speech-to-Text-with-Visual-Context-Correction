@@ -72,6 +72,7 @@ import mss.tools
 from anthropic import Anthropic
 import websockets
 import asyncio
+import requests
 
 # Windows API imports
 import win32api
@@ -117,6 +118,7 @@ class AppConfig:
     openai_api_key: str = ""
     groq_api_key: str = ""
     anthropic_api_key: str = ""
+    deepgram_api_key: str = ""
     
     # Transcription settings
     backend: int = 1  # 1=GPT-4o, 2=Whisper-1, 3=Groq+correction, 4=Groq only
@@ -505,6 +507,8 @@ class TranscriptionEngine:
             self.config.groq_api_key = os.getenv("GROQ_API_KEY", "")
         if not self.config.anthropic_api_key:
             self.config.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        if not hasattr(self.config, 'deepgram_api_key') or not self.config.deepgram_api_key:
+            self.config.deepgram_api_key = os.getenv("DEEPGRAM_API_KEY", "")
         
         # OpenAI
         api_key = self.config.openai_api_key or os.getenv("OPENAI_API_KEY")
@@ -555,7 +559,8 @@ class TranscriptionEngine:
         return {
             'openai': self.openai_client is not None,
             'groq': self.groq_client is not None,
-            'claude': self.claude_client is not None
+            'claude': self.claude_client is not None,
+            'deepgram': bool(getattr(self.config, 'deepgram_api_key', ''))
         }
     
     def transcribe_file(self, file_path: str, progress_callback=None) -> Tuple[bool, str]:
@@ -568,6 +573,8 @@ class TranscriptionEngine:
                 return self._transcribe_openai(file_path, progress_callback)
             elif self.config.backend in [3, 4] and self.groq_client:
                 return self._transcribe_groq(file_path, progress_callback)
+            elif self.config.backend in [5, 6, 7] and getattr(self.config, 'deepgram_api_key', ''):
+                return self._transcribe_deepgram(file_path, progress_callback)
             else:
                 return False, "No suitable transcription service available"
                 
@@ -644,6 +651,52 @@ class TranscriptionEngine:
             print(f"❌ DEBUG: Groq transcription error: {e}")
             traceback.print_exc()
             return False, f"Groq transcription failed: {e}"
+
+    def _transcribe_deepgram(self, file_path: str, progress_callback=None) -> Tuple[bool, str]:
+        """Transcribe using Deepgram"""
+        try:
+            print("🔍 DEBUG: Starting Deepgram transcription...")
+            if progress_callback:
+                progress_callback("Transcribing with Deepgram...", 50)
+            
+            api_key = getattr(self.config, 'deepgram_api_key', '')
+            if not api_key:
+                return False, "Deepgram API key not configured."
+            
+            # Target flux model on backend=7, nova-3 on others
+            if self.config.backend == 7:
+                model = "flux"
+            else:
+                model = "nova-3"
+                
+            print(f"🔍 DEBUG: Deepgram selected model: {model}")
+
+            url = f"https://api.deepgram.com/v1/listen?model={model}&smart_format=true"
+            headers = {
+                "Authorization": f"Token {api_key}"
+            }
+            
+            with open(file_path, "rb") as audio_file:
+                response = requests.post(url, headers=headers, data=audio_file)
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            if progress_callback:
+                progress_callback("Transcription completed", 100)
+                
+            transcript = ""
+            if "results" in data and "channels" in data["results"] and len(data["results"]["channels"]) > 0:
+                alternatives = data["results"]["channels"][0].get("alternatives", [])
+                if len(alternatives) > 0:
+                    transcript = alternatives[0].get("transcript", "")
+                    
+            return True, transcript
+                
+        except Exception as e:
+            print(f"❌ DEBUG: Deepgram transcription error: {e}")
+            traceback.print_exc()
+            return False, f"Deepgram transcription failed: {e}"
 
 
 class ScreenshotEngine:
@@ -1474,6 +1527,13 @@ class SpeechToTextGUI:
                 initial_mode_label = "Groq Whisper 3 Large with Screenshot Correction"
             else:
                 initial_mode_label = "Groq Whisper 3 Large Transcription Only"
+        elif saved_backend in [5, 6, 7]:
+            if saved_backend == 5:
+                initial_mode_label = "Deepgram Nova-3 (Highest Accuracy) with Correction"
+            elif saved_backend == 6:
+                initial_mode_label = "Deepgram Nova-3 Transcription Only"
+            else:
+                initial_mode_label = "Deepgram Flux (Fast) Transcription Only"
         else:
             initial_mode_label = {
                 1: "High-Accuracy Mode (gpt-4o-transcribe + GPT-4.1)",
@@ -1492,7 +1552,10 @@ class SpeechToTextGUI:
             "Transcription-Only (High-Accuracy)",
             "Transcription-Only (Fast)",
             "Groq Whisper 3 Large with Screenshot Correction",
-            "Groq Whisper 3 Large Transcription Only"
+            "Groq Whisper 3 Large Transcription Only",
+            "Deepgram Nova-3 (Highest Accuracy) with Correction",
+            "Deepgram Nova-3 Transcription Only",
+            "Deepgram Flux (Fast) Transcription Only"
         ]
         mode_combo.pack(side=tk.LEFT, padx=(0, 10))
         mode_combo.bind('<<ComboboxSelected>>', self._on_mode_changed)
@@ -1606,6 +1669,7 @@ class SpeechToTextGUI:
         openai_key = self.config.openai_api_key or os.getenv("OPENAI_API_KEY", "")
         groq_key = self.config.groq_api_key or os.getenv("GROQ_API_KEY", "")
         anthropic_key = self.config.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY", "")
+        deepgram_key = getattr(self.config, 'deepgram_api_key', '') or os.getenv("DEEPGRAM_API_KEY", "")
         
         # OpenAI API Key
         ttk.Label(api_frame, text="OpenAI API Key:").grid(row=0, column=0, sticky="w", pady=2)
@@ -1625,11 +1689,17 @@ class SpeechToTextGUI:
         anthropic_entry = ttk.Entry(api_frame, textvariable=self.anthropic_key_var, show="*", width=50)
         anthropic_entry.grid(row=2, column=1, sticky="ew", padx=(5, 0), pady=2)
         
+        # Deepgram API Key
+        ttk.Label(api_frame, text="Deepgram API Key:").grid(row=3, column=0, sticky="w", pady=2)
+        self.deepgram_key_var = tk.StringVar(value=deepgram_key)
+        deepgram_entry = ttk.Entry(api_frame, textvariable=self.deepgram_key_var, show="*", width=50)
+        deepgram_entry.grid(row=3, column=1, sticky="ew", padx=(5, 0), pady=2)
+        
         api_frame.columnconfigure(1, weight=1)
         
         # Test API connections button
         ttk.Button(api_frame, text="Test Connections", command=self._test_api_connections).grid(
-            row=3, column=1, sticky="e", pady=10
+            row=4, column=1, sticky="e", pady=10
         )
         
         # Recording Settings section
@@ -2422,6 +2492,8 @@ class SpeechToTextGUI:
         self.config.openai_api_key = self.openai_key_var.get()
         self.config.groq_api_key = self.groq_key_var.get()
         self.config.anthropic_api_key = self.anthropic_key_var.get()
+        if hasattr(self, 'deepgram_key_var'):
+            self.config.deepgram_api_key = self.deepgram_key_var.get()
         self.config.hotkey = self.hotkey_var.get()
         self.config.max_recording_duration = self.max_duration_var.get()
         self.config.rate = self.sample_rate_var.get()
@@ -2452,6 +2524,8 @@ class SpeechToTextGUI:
             self.openai_key_var.set(self.config.openai_api_key)
             self.groq_key_var.set(self.config.groq_api_key)
             self.anthropic_key_var.set(self.config.anthropic_api_key)
+            if hasattr(self, 'deepgram_key_var'):
+                self.deepgram_key_var.set(getattr(self.config, 'deepgram_api_key', ''))
             self.hotkey_var.set(self.config.hotkey)
             self.max_duration_var.set(self.config.max_recording_duration)
             self.sample_rate_var.set(self.config.rate)
@@ -2498,6 +2572,19 @@ class SpeechToTextGUI:
                 results.append(f"✗ Anthropic: {str(e)[:50]}...")
         else:
             results.append("⚠ Anthropic: No API key")
+            
+        # Test Deepgram
+        deepgram_key = getattr(self, 'deepgram_key_var', tk.StringVar()).get()
+        if deepgram_key:
+            try:
+                headers = {"Authorization": f"Token {deepgram_key}"}
+                response = requests.get("https://api.deepgram.com/v1/projects", headers=headers)
+                response.raise_for_status()
+                results.append("✓ Deepgram: Connected")
+            except Exception as e:
+                results.append(f"✗ Deepgram: {str(e)[:50]}...")
+        else:
+            results.append("⚠ Deepgram: No API key")
         
         messagebox.showinfo("API Connection Test", "\n".join(results))
     
@@ -2533,6 +2620,18 @@ class SpeechToTextGUI:
         elif "Groq Whisper 3 Large Transcription Only" in mode:
             self.config.mode = 4
             self.config.backend = 4  # Groq only
+            self.config.use_correction = False
+        elif "Deepgram Nova-3 (Highest Accuracy) with Correction" in mode:
+            self.config.mode = 1
+            self.config.backend = 5
+            self.config.use_correction = True
+        elif "Deepgram Nova-3 Transcription Only" in mode:
+            self.config.mode = 4
+            self.config.backend = 6
+            self.config.use_correction = False
+        elif "Deepgram Flux (Fast) Transcription Only" in mode:
+            self.config.mode = 5
+            self.config.backend = 7
             self.config.use_correction = False
         
         # Save the updated config to persist the mode selection
