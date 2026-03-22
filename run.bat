@@ -1,4 +1,6 @@
 @echo off
+REM Change to the directory where this batch file lives (fixes "Run as Administrator" issue)
+cd /d "%~dp0"
 title Professional Speech-to-Text Application - Psynect Corp
 echo ====================================================
 echo Professional Speech-to-Text GUI Application
@@ -38,7 +40,7 @@ if %errorlevel% neq 0 (
     pip install numpy>=1.21.0 Pillow>=9.0.0 pyautogui>=0.9.50
     
     echo Installing AI service dependencies...
-    pip install openai>=1.0.0 groq>=0.4.0 anthropic>=0.7.0
+    pip install openai>=1.0.0 groq>=0.4.0 anthropic>=0.7.0 google-genai>=1.0.0
     
     echo Installing audio dependencies...
     pip install sounddevice>=0.4.6 soundfile>=0.12.0
@@ -63,11 +65,13 @@ if not exist "data\.env" (
     echo OPENAI_API_KEY=your_openai_api_key_here >> data\.env
     echo GROQ_API_KEY=your_groq_api_key_here >> data\.env
     echo ANTHROPIC_API_KEY=your_anthropic_api_key_here >> data\.env
+    echo GOOGLE_API_KEY=your_google_api_key_here >> data\.env
     echo. >> data\.env
     echo # Get your API keys from: >> data\.env
     echo # OpenAI: https://platform.openai.com/api-keys >> data\.env
     echo # Groq: https://console.groq.com/keys >> data\.env
     echo # Anthropic: https://console.anthropic.com/ >> data\.env
+    echo # Google AI: https://aistudio.google.com/apikey >> data\.env
     echo.
     echo INFO: .env template created in data folder. You can add your API keys there,
     echo or configure them in the application settings.

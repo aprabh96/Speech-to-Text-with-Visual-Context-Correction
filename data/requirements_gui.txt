@@ -13,6 +13,7 @@ numpy>=1.21.0  # Audio data processing
 openai>=1.0.0  # OpenAI API client
 groq>=0.4.0  # Groq API client
 anthropic>=0.7.0  # Anthropic Claude API client
+google-genai>=1.0.0  # Google Gemini API client
 
 # Utilities and System Integration
 keyboard>=0.13.5  # Global hotkeys
