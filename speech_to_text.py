@@ -594,7 +594,7 @@ def correct_transcription_with_vision_model(transcription, image):
 
         print("Sending request to Claude for correction...")
         response = claude_client.messages.create(
-            model="claude-3-5-sonnet-20240620", # Use the latest appropriate model
+            model="claude-sonnet-4-20250514",
             max_tokens=3000,
             system=GENERAL_CORRECTION_SYSTEM_PROMPT,
             messages=[{

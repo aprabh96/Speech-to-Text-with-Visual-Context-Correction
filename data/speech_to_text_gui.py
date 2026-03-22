@@ -522,6 +522,8 @@ class TranscriptionEngine:
             self.config.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
         if not hasattr(self.config, 'deepgram_api_key') or not self.config.deepgram_api_key:
             self.config.deepgram_api_key = os.getenv("DEEPGRAM_API_KEY", "")
+        if not hasattr(self.config, 'google_api_key') or not self.config.google_api_key:
+            self.config.google_api_key = os.getenv("GOOGLE_API_KEY", "")
         
         # OpenAI
         api_key = self.config.openai_api_key or os.getenv("OPENAI_API_KEY")
@@ -825,7 +827,7 @@ Output the corrected transcript only. No quotes, no explanation."""
             b64 = base64.b64encode(buffered.getvalue()).decode("ascii")
             
             # Choose model based on selected transcription backend
-            model = "gpt-4o-mini" if self.config.transcription_backend == "gpt-4o-mini" else "gpt-4.1"
+            model = "gpt-4o-mini" if getattr(self.config, 'backend', 1) == 2 else "gpt-4.1"
             print(f"Using {model} for correction...")
             
             resp = self.openai_client.responses.create(
@@ -863,7 +865,7 @@ Output the corrected transcript only. No quotes, no explanation."""
             
             print("Sending request to Claude for correction...")
             response = self.claude_client.messages.create(
-                model="claude-3-5-sonnet-20240620",
+                model="claude-sonnet-4-20250514",
                 max_tokens=3000,
                 system=self.CORRECTION_SYSTEM_PROMPT,
                 messages=[{
@@ -1600,17 +1602,17 @@ class SpeechToTextGUI:
                 initial_mode_label = "Deepgram Flux (Fast) Transcription Only"
         else:
             initial_mode_label = {
-                1: "High-Accuracy Mode (gpt-4o-transcribe + GPT-4.1)",
+                1: "High-Accuracy Mode (gpt-4o-transcribe + Screenshot Correction)",
                 2: "Fast-Processing Mode (gpt-4o-mini models)",
                 3: "Real-time Mode (gpt-4o-transcribe, no correction)",
                 4: "Transcription-Only (High-Accuracy)",
                 5: "Transcription-Only (Fast)"
-            }.get(saved_mode, "High-Accuracy Mode (gpt-4o-transcribe + GPT-4.1)")
+            }.get(saved_mode, "High-Accuracy Mode (gpt-4o-transcribe + Screenshot Correction)")
 
         self.mode_var = tk.StringVar(value=initial_mode_label)
         mode_combo = ttk.Combobox(mode_frame, textvariable=self.mode_var, state="readonly", width=50)
         mode_combo['values'] = [
-            "High-Accuracy Mode (gpt-4o-transcribe + GPT-4.1)",
+            "High-Accuracy Mode (gpt-4o-transcribe + Screenshot Correction)",
             "Fast-Processing Mode (gpt-4o-mini models)", 
             "Real-time Mode (gpt-4o-transcribe, no correction)",
             "Transcription-Only (High-Accuracy)",
@@ -1823,9 +1825,16 @@ class SpeechToTextGUI:
 
         # Correction Model selection
         ttk.Label(recording_frame, text="Correction Model:").grid(row=4, column=0, sticky="w", pady=2)
-        self.correction_model_var = tk.StringVar(value=getattr(self.config, 'correction_model', 'gemini'))
+        self._correction_model_map = {
+            "Gemini 3 Flash": "gemini",
+            "GPT-4.1 (OpenAI)": "openai",
+        }
+        self._correction_model_reverse = {v: k for k, v in self._correction_model_map.items()}
+        current_value = getattr(self.config, 'correction_model', 'gemini')
+        display_value = self._correction_model_reverse.get(current_value, "Gemini 3 Flash")
+        self.correction_model_var = tk.StringVar(value=display_value)
         correction_combo = ttk.Combobox(recording_frame, textvariable=self.correction_model_var, width=22, state="readonly")
-        correction_combo['values'] = ["gemini", "openai"]
+        correction_combo['values'] = list(self._correction_model_map.keys())
         correction_combo.grid(row=4, column=1, sticky="w", padx=(5, 0), pady=2)
 
         # Add helpful note about correction model
@@ -2588,7 +2597,8 @@ class SpeechToTextGUI:
         if hasattr(self, 'google_key_var'):
             self.config.google_api_key = self.google_key_var.get()
         if hasattr(self, 'correction_model_var'):
-            self.config.correction_model = self.correction_model_var.get()
+            display = self.correction_model_var.get()
+            self.config.correction_model = self._correction_model_map.get(display, 'gemini')
 
         # Save to file
         self.config.save_to_file()
@@ -2618,7 +2628,8 @@ class SpeechToTextGUI:
             if hasattr(self, 'google_key_var'):
                 self.google_key_var.set(getattr(self.config, 'google_api_key', ''))
             if hasattr(self, 'correction_model_var'):
-                self.correction_model_var.set(getattr(self.config, 'correction_model', 'gemini'))
+                raw = getattr(self.config, 'correction_model', 'gemini')
+                self.correction_model_var.set(self._correction_model_reverse.get(raw, 'Gemini 3 Flash'))
             self.hotkey_var.set(self.config.hotkey)
             self.max_duration_var.set(self.config.max_recording_duration)
             self.sample_rate_var.set(self.config.rate)
