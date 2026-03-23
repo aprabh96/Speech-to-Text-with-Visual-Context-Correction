@@ -43,6 +43,9 @@ wheels/
 *.swp
 *.swo
 
+# Claude Code working docs
+docs/superpowers/
+
 # OS specific files
 .DS_Store
 Thumbs.db 
@@ -50,7 +53,9 @@ Thumbs.db
 # Project specific (all app data lives under data/)
 data/screenshots/
 data/recordings/
+data/data/
 data/transcript_history.json
 data/app_config.json
+data/persistent_memory.json
 data/*.wav
 data/*.jpg

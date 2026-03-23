@@ -132,6 +132,7 @@ class AppConfig:
 
     # Correction settings
     correction_model: str = "gemini"  # "gemini" or "openai" (GPT-4.1)
+    use_persistent_memory: bool = False  # Beta: learn from screen context over time
 
     # Transcription settings
     backend: int = 1  # 1=GPT-4o, 2=Whisper-1, 3=Groq+correction, 4=Groq only
@@ -752,10 +753,160 @@ class ScreenshotEngine:
             return None, None
 
 
+class PersistentMemory:
+    """Manages persistent learning from screen context corrections (Beta feature)"""
+
+    MEMORY_FILE = os.path.join(SCRIPT_DIR, "persistent_memory.json")
+    MAX_LIST_ITEMS = 200
+    MAX_PATTERNS = 500
+
+    CONTEXT_CATEGORIES = [
+        "tools_and_software",
+        "project_names",
+        "people",
+        "technical_terms",
+        "custom_vocabulary",
+        "common_phrases",
+    ]
+
+    # JSON schema for structured model responses
+    RESPONSE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "corrected_transcript": {"type": "string"},
+            "learned_context": {
+                "type": "object",
+                "properties": {
+                    "tools_and_software": {"type": "array", "items": {"type": "string"}},
+                    "project_names": {"type": "array", "items": {"type": "string"}},
+                    "people": {"type": "array", "items": {"type": "string"}},
+                    "technical_terms": {"type": "array", "items": {"type": "string"}},
+                    "custom_vocabulary": {"type": "array", "items": {"type": "string"}},
+                    "common_phrases": {"type": "array", "items": {"type": "string"}},
+                    "correction_patterns": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                    },
+                },
+                "required": [
+                    "tools_and_software", "project_names", "people",
+                    "technical_terms", "custom_vocabulary", "common_phrases",
+                    "correction_patterns",
+                ],
+            },
+        },
+        "required": ["corrected_transcript", "learned_context"],
+    }
+
+    def __init__(self):
+        self.memory = self._load()
+
+    def _default_memory(self) -> dict:
+        return {
+            "version": 1,
+            "last_updated": None,
+            "total_corrections": 0,
+            "context": {
+                "tools_and_software": [],
+                "project_names": [],
+                "people": [],
+                "technical_terms": [],
+                "custom_vocabulary": [],
+                "common_phrases": [],
+                "correction_patterns": {},
+            },
+        }
+
+    def _load(self) -> dict:
+        try:
+            if os.path.exists(self.MEMORY_FILE):
+                with open(self.MEMORY_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                # Ensure all categories exist (forward compat)
+                ctx = data.setdefault("context", {})
+                for cat in self.CONTEXT_CATEGORIES:
+                    ctx.setdefault(cat, [])
+                ctx.setdefault("correction_patterns", {})
+                return data
+        except Exception as e:
+            print(f"Error loading persistent memory: {e}")
+        return self._default_memory()
+
+    def save(self):
+        try:
+            with open(self.MEMORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.memory, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"Error saving persistent memory: {e}")
+
+    def merge(self, learned_context: dict):
+        """Additively merge new learned context into memory."""
+        if not learned_context:
+            return
+        ctx = self.memory["context"]
+        for cat in self.CONTEXT_CATEGORIES:
+            new_items = learned_context.get(cat, [])
+            if not new_items:
+                continue
+            existing_lower = {item.lower() for item in ctx[cat]}
+            for item in new_items:
+                if isinstance(item, str) and item.strip() and item.lower() not in existing_lower:
+                    ctx[cat].append(item.strip())
+                    existing_lower.add(item.lower())
+            # Cap size
+            if len(ctx[cat]) > self.MAX_LIST_ITEMS:
+                ctx[cat] = ctx[cat][-self.MAX_LIST_ITEMS:]
+
+        # Merge correction patterns
+        new_patterns = learned_context.get("correction_patterns", {})
+        if new_patterns and isinstance(new_patterns, dict):
+            existing_keys_lower = {k.lower() for k in ctx["correction_patterns"]}
+            for wrong, right in new_patterns.items():
+                if isinstance(wrong, str) and isinstance(right, str) and wrong.lower() not in existing_keys_lower:
+                    ctx["correction_patterns"][wrong] = right
+                    existing_keys_lower.add(wrong.lower())
+            # Cap size
+            if len(ctx["correction_patterns"]) > self.MAX_PATTERNS:
+                keys = list(ctx["correction_patterns"].keys())
+                for k in keys[: len(keys) - self.MAX_PATTERNS]:
+                    del ctx["correction_patterns"][k]
+
+        self.memory["total_corrections"] = self.memory.get("total_corrections", 0) + 1
+        self.memory["last_updated"] = datetime.now().isoformat()
+        self.save()
+        print(f"Persistent memory updated (correction #{self.memory['total_corrections']})")
+
+    def get_prompt_context(self) -> str:
+        """Build a text block of learned context for injection into the prompt."""
+        ctx = self.memory["context"]
+        parts = []
+        for cat in self.CONTEXT_CATEGORIES:
+            items = ctx.get(cat, [])
+            if items:
+                label = cat.replace("_", " ").title()
+                parts.append(f"- {label}: {', '.join(items)}")
+        patterns = ctx.get("correction_patterns", {})
+        if patterns:
+            pattern_strs = [f'"{wrong}" -> "{right}"' for wrong, right in patterns.items()]
+            parts.append(f"- Known Correction Patterns: {'; '.join(pattern_strs)}")
+        if not parts:
+            return ""
+        return "LEARNED CONTEXT FROM PRIOR SESSIONS:\n" + "\n".join(parts)
+
+    def is_empty(self) -> bool:
+        ctx = self.memory.get("context", {})
+        for cat in self.CONTEXT_CATEGORIES:
+            if ctx.get(cat):
+                return False
+        if ctx.get("correction_patterns"):
+            return False
+        return True
+
+
 class CorrectionEngine:
     """Handles transcription correction using vision models"""
-    
-    # System prompt for all correction models
+
+    # System prompt for all correction models (plain text mode - no persistent memory)
     CORRECTION_SYSTEM_PROMPT = """You are a transcription corrector. You receive a speech-to-text transcript and a screenshot of the user's screen.
 
 TASK: Fix transcription errors using the screenshot as context. Return ONLY the corrected transcript.
@@ -769,19 +920,41 @@ RULES:
 6. If the transcript is empty, return: No transcription provided
 
 Output the corrected transcript only. No quotes, no explanation."""
+
+    # System prompt for persistent memory mode (structured JSON output)
+    MEMORY_SYSTEM_PROMPT = """You are a transcription corrector. You receive a speech-to-text transcript, a screenshot of the user's screen, and optionally learned context from prior sessions.
+
+TASK: Fix transcription errors using the screenshot and learned context. Return a JSON response with the corrected transcript and any new context you learned from the screenshot.
+
+CORRECTION RULES:
+1. Match proper nouns, technical terms, variable names, file paths, URLs, and UI labels visible on screen.
+2. Use the LEARNED CONTEXT to correct terms the user commonly uses, even if not visible on the current screenshot.
+3. Fix homophones and misheard words using both screen and learned context.
+4. Fix obvious punctuation and sentence boundaries.
+5. Do NOT add, remove, or rephrase content. Preserve the speaker's exact wording and style.
+6. Do NOT describe or transcribe the screenshot itself.
+7. If the transcript is empty, set corrected_transcript to empty string.
+
+CONTEXT EXTRACTION RULES:
+- Extract ONLY items clearly visible on the screenshot that would help future corrections.
+- Only extract NEW items not already in the learned context provided below.
+- correction_patterns: map the likely misheard version to the correct spelling/term.
+- Leave categories as empty arrays/objects if nothing new is found.
+- Be selective — only extract items that a speech-to-text system would plausibly mishear."""
     
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, persistent_memory: Optional[PersistentMemory] = None):
         self.config = config
+        self.persistent_memory = persistent_memory
         self.openai_client = None
         self.claude_client = None
-        
+
         # Initialize OpenAI
         if config.openai_api_key:
             try:
                 self.openai_client = OpenAI(api_key=config.openai_api_key)
             except Exception as e:
                 print(f"Failed to initialize OpenAI client for correction: {e}")
-        
+
         # Initialize Claude
         if config.anthropic_api_key:
             try:
@@ -809,88 +982,176 @@ Output the corrected transcript only. No quotes, no explanation."""
         except Exception as e:
             print(f"Error encoding image to base64: {e}")
             return None
+
+    @property
+    def _use_memory(self) -> bool:
+        """Check if persistent memory mode is active."""
+        return (
+            getattr(self.config, "use_persistent_memory", False)
+            and self.persistent_memory is not None
+        )
+
+    def _build_memory_user_prompt(self, transcription: str) -> str:
+        """Build user prompt with learned context for memory mode."""
+        parts = [f'Here is the raw transcription:\n"{transcription}"']
+        if self.persistent_memory and not self.persistent_memory.is_empty():
+            context_block = self.persistent_memory.get_prompt_context()
+            if context_block:
+                parts.append(f"\n{context_block}")
+        return "\n".join(parts)
+
+    def _parse_memory_response(self, raw_text: str, original_transcription: str) -> str:
+        """Parse JSON response from memory mode. Returns corrected transcript.
+        Merges learned context into persistent memory on success.
+        Falls back to treating raw_text as plain transcript on parse failure."""
+        try:
+            data = json.loads(raw_text)
+            corrected = data.get("corrected_transcript", "").strip()
+            if not corrected:
+                print("Warning: Empty corrected_transcript in JSON response, using original.")
+                return original_transcription
+
+            # Merge learned context
+            learned = data.get("learned_context")
+            if learned and isinstance(learned, dict) and self.persistent_memory:
+                self.persistent_memory.merge(learned)
+
+            return corrected
+        except (json.JSONDecodeError, TypeError, KeyError) as e:
+            print(f"Warning: Failed to parse memory JSON response ({e}). Using raw text as transcript.")
+            # Fallback: treat the whole response as corrected text
+            cleaned = raw_text.strip()
+            if cleaned:
+                return cleaned
+            return original_transcription
     
     def correct_with_openai(self, transcription: str, image: Image.Image) -> str:
         """Correct transcription using OpenAI GPT-4.1 with vision"""
         if not self.openai_client:
             print("OpenAI correction not available; skipping.")
             return transcription
-        
+
         if image is None:
             print("No screenshot available for OpenAI correction.")
             return transcription
-        
+
         try:
             # Encode screenshot as base64
             buffered = io.BytesIO()
             image.save(buffered, format="JPEG")
             b64 = base64.b64encode(buffered.getvalue()).decode("ascii")
-            
+
             # Choose model based on selected transcription backend
             model = "gpt-4o-mini" if getattr(self.config, 'backend', 1) == 2 else "gpt-4.1"
             print(f"Using {model} for correction...")
-            
-            resp = self.openai_client.responses.create(
-                model=model,
-                input=[
-                    {"role": "system", "content": self.CORRECTION_SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": f"Here is the raw transcription:\n\"{transcription}\""},
-                            {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}
-                        ]
-                    }
-                ]
-            )
-            return resp.output_text.strip()
+
+            if self._use_memory:
+                user_text = self._build_memory_user_prompt(transcription)
+                resp = self.openai_client.responses.create(
+                    model=model,
+                    input=[
+                        {"role": "system", "content": self.MEMORY_SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": user_text},
+                                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"},
+                            ],
+                        },
+                    ],
+                    text={
+                        "format": {
+                            "type": "json_schema",
+                            "name": "correction_response",
+                            "schema": PersistentMemory.RESPONSE_SCHEMA,
+                            "strict": False,
+                        }
+                    },
+                )
+                return self._parse_memory_response(resp.output_text, transcription)
+            else:
+                resp = self.openai_client.responses.create(
+                    model=model,
+                    input=[
+                        {"role": "system", "content": self.CORRECTION_SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": f'Here is the raw transcription:\n"{transcription}"'},
+                                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"},
+                            ],
+                        },
+                    ],
+                )
+                return resp.output_text.strip()
         except Exception as e:
             print(f"OpenAI correction failed: {e}. Trying Claude fallback.")
             return self.correct_with_claude(transcription, image)
-    
+
     def correct_with_claude(self, transcription: str, image: Image.Image) -> str:
         """Correct transcription using Claude vision"""
         if not self.claude_client:
             print("Claude correction not available.")
             return transcription
-        
+
         if image is None:
             print("No screenshot available for Claude correction.")
             return transcription
-        
+
         try:
             base64_image = self.encode_image_to_base64(image)
             if not base64_image:
                 return transcription
-            
-            print("Sending request to Claude for correction...")
-            response = self.claude_client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=3000,
-                system=self.CORRECTION_SYSTEM_PROMPT,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": f"Here's the transcribed speech: \"{transcription}\""},
-                        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base64_image}}
-                    ]
-                }]
-            )
-            
-            # Handle potential differences in response structure
-            if response.content and isinstance(response.content, list) and hasattr(response.content[0], 'text'):
-                corrected_text = response.content[0].text
+
+            if self._use_memory:
+                user_text = self._build_memory_user_prompt(transcription)
+                schema_instruction = (
+                    "\n\nYou MUST respond with valid JSON matching this schema:\n"
+                    + json.dumps(PersistentMemory.RESPONSE_SCHEMA, indent=2)
+                )
+                print("Sending request to Claude for correction (memory mode)...")
+                response = self.claude_client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=3000,
+                    system=self.MEMORY_SYSTEM_PROMPT + schema_instruction,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": user_text},
+                            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base64_image}},
+                        ],
+                    }],
+                )
+                raw_text = ""
+                if response.content and isinstance(response.content, list) and hasattr(response.content[0], "text"):
+                    raw_text = response.content[0].text
+                return self._parse_memory_response(raw_text, transcription)
             else:
-                print(f"Warning: Unexpected Claude response structure: {response}")
-                corrected_text = transcription
-            
-            print(f"Original: {transcription}")
-            print(f"Corrected: {corrected_text}")
-            return corrected_text
+                print("Sending request to Claude for correction...")
+                response = self.claude_client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=3000,
+                    system=self.CORRECTION_SYSTEM_PROMPT,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": f'Here\'s the transcribed speech: "{transcription}"'},
+                            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base64_image}},
+                        ],
+                    }],
+                )
+                if response.content and isinstance(response.content, list) and hasattr(response.content[0], "text"):
+                    corrected_text = response.content[0].text
+                else:
+                    print(f"Warning: Unexpected Claude response structure: {response}")
+                    corrected_text = transcription
+                print(f"Original: {transcription}")
+                print(f"Corrected: {corrected_text}")
+                return corrected_text
         except Exception as e:
             print(f"Error during Claude correction: {e}")
             return transcription
-    
+
     def correct_with_gemini(self, transcription: str, image: Image.Image) -> str:
         """Correct transcription using Gemini 3 Flash with vision"""
         if not self.gemini_client:
@@ -903,19 +1164,35 @@ Output the corrected transcript only. No quotes, no explanation."""
 
         try:
             print("Using Gemini 3 Flash for correction...")
-            response = self.gemini_client.models.generate_content(
-                model='gemini-3-flash-preview',
-                contents=[image, f'Here is the raw transcription:\n"{transcription}"'],
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=self.CORRECTION_SYSTEM_PROMPT,
-                    max_output_tokens=3000,
-                    temperature=0.1,
+
+            if self._use_memory:
+                user_text = self._build_memory_user_prompt(transcription)
+                response = self.gemini_client.models.generate_content(
+                    model="gemini-3-flash-preview",
+                    contents=[image, user_text],
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=self.MEMORY_SYSTEM_PROMPT,
+                        temperature=0.1,
+                        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+                        response_mime_type="application/json",
+                        response_json_schema=PersistentMemory.RESPONSE_SCHEMA,
+                    ),
                 )
-            )
-            corrected = response.text.strip()
-            print(f"Original: {transcription}")
-            print(f"Corrected: {corrected}")
-            return corrected
+                return self._parse_memory_response(response.text, transcription)
+            else:
+                response = self.gemini_client.models.generate_content(
+                    model="gemini-3-flash-preview",
+                    contents=[image, f'Here is the raw transcription:\n"{transcription}"'],
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=self.CORRECTION_SYSTEM_PROMPT,
+                        temperature=0.1,
+                        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+                    ),
+                )
+                corrected = response.text.strip()
+                print(f"Original: {transcription}")
+                print(f"Corrected: {corrected}")
+                return corrected
         except Exception as e:
             print(f"Gemini correction failed: {e}. Trying fallback.")
             # Fall back to OpenAI then Claude
@@ -1417,6 +1694,7 @@ class SpeechToTextGUI:
         self.screenshot_engine = None
         self.hotkey_manager = HotkeyManager()
         self.transcript_history = TranscriptHistory()
+        self.persistent_memory = PersistentMemory()
         self.system_tray = None
 
         # GUI components
@@ -1452,8 +1730,8 @@ class SpeechToTextGUI:
             self.audio_engine = AudioEngine(self.config)
             self.transcription_engine = TranscriptionEngine(self.config)
             self.screenshot_engine = ScreenshotEngine(self.config)
-            self.correction_engine = CorrectionEngine(self.config)
-            
+            self.correction_engine = CorrectionEngine(self.config, self.persistent_memory)
+
             # Create GUI
             self._create_gui()
             
@@ -1842,6 +2120,14 @@ class SpeechToTextGUI:
                              text="Gemini 3 Flash (cheaper) or GPT-4.1",
                              font=("Arial", 8), fg="gray")
         correction_note.grid(row=4, column=2, sticky="w", padx=(10, 0), pady=2)
+
+        # Persistent Memory (Beta) toggle
+        self.persistent_memory_var = tk.BooleanVar(value=getattr(self.config, 'use_persistent_memory', False))
+        ttk.Checkbutton(
+            recording_frame,
+            text="Persistent Memory (Beta) — learns from your screen over time",
+            variable=self.persistent_memory_var,
+        ).grid(row=5, column=0, columnspan=3, sticky="w", pady=2)
 
         # UI Settings section
         ui_frame = ttk.LabelFrame(scrollable_frame, text="User Interface", padding=10)
@@ -2599,13 +2885,15 @@ class SpeechToTextGUI:
         if hasattr(self, 'correction_model_var'):
             display = self.correction_model_var.get()
             self.config.correction_model = self._correction_model_map.get(display, 'gemini')
+        if hasattr(self, 'persistent_memory_var'):
+            self.config.use_persistent_memory = self.persistent_memory_var.get()
 
         # Save to file
         self.config.save_to_file()
 
         # Reinitialize engines with new settings
         self.transcription_engine = TranscriptionEngine(self.config)
-        self.correction_engine = CorrectionEngine(self.config)
+        self.correction_engine = CorrectionEngine(self.config, self.persistent_memory)
         
         # Update hotkeys
         self.hotkey_manager.unregister_all()
@@ -2637,7 +2925,9 @@ class SpeechToTextGUI:
             self.auto_minimize_var.set(self.config.auto_minimize)
             self.system_tray_var.set(self.config.system_tray)
             self.auto_paste_var.set(self.config.auto_paste)
-            
+            if hasattr(self, 'persistent_memory_var'):
+                self.persistent_memory_var.set(getattr(self.config, 'use_persistent_memory', False))
+
             self.status_var.set("Settings reset to defaults")
     
     def _test_api_connections(self):

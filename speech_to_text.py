@@ -638,8 +638,8 @@ def correct_transcription_with_gemini(transcription, image):
             contents=[image, f'Here is the raw transcription:\n"{transcription}"'],
             config=genai_types.GenerateContentConfig(
                 system_instruction=GENERAL_CORRECTION_SYSTEM_PROMPT,
-                max_output_tokens=3000,
                 temperature=0.1,
+                thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
             )
         )
         corrected_text = response.text.strip()
